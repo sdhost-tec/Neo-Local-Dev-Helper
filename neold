@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -e
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+# Find NeoLocalDev package directory
+if [ -d "$SCRIPT_DIR/NeoLocalDev" ]; then
+    export PYTHONPATH="$SCRIPT_DIR"
+    exec python3 -m NeoLocalDev.cli "$@"
+elif [ -d "$(dirname "$SCRIPT_DIR")/NeoLocalDev" ]; then
+    export PYTHONPATH="$(dirname "$SCRIPT_DIR")"
+    exec python3 -m NeoLocalDev.cli "$@"
+else
+    exec python3 -m NeoLocalDev.cli "$@"
+fi

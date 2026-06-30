@@ -1,0 +1,14 @@
+[Unit]
+Description=Neo LocalDev - Local Development Platform
+After=network.target
+
+[Service]
+Type=simple
+User=%I
+WorkingDirectory=%h/neo-localdev
+ExecStart=%h/neo-localdev/devctl start --foreground
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

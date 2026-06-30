@@ -1,0 +1,23 @@
+# Sensitive files
+git.sh
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+NeoLocalDev/__pycache__/
+devpoka/__pycache__/
+
+# Test/dev artifacts
+dashboard_test.html
+dashboard_test.js
+NeoLocalDev.zip
+
+# Runtime data
+*.log
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
