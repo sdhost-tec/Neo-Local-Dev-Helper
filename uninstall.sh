@@ -22,17 +22,34 @@ echo ""
 # ─────────────────────────────────────────────────────────────
 # 1. Stop services
 # ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[1/9]${NC} Stopping services..."
+echo -e "${CYAN}[1/9]${NC} Stopping all services and processes..."
+
+# Try graceful stop first
 if command -v neold &>/dev/null; then
     neold stop 2>/dev/null || true
 elif command -v devctl &>/dev/null; then
     devctl stop 2>/dev/null || true
 fi
-# Kill any remaining processes
-pkill -f "devpoka" 2>/dev/null || true
-pkill -f "NeoLocalDev" 2>/dev/null || true
-pkill -f "caddy run" 2>/dev/null || true
-echo -e "  ${GREEN}✓${NC} Services stopped"
+
+# Wait a moment for graceful shutdown
+sleep 2
+
+# Force-kill ALL NeoLocalDev-related processes (handles orphaned/stale processes, including root-owned)
+echo -e "  ${DIM}  Killing any remaining NeoLocalDev processes...${NC}"
+sudo pkill -9 -f "NeoLocalDev.api_server"   2>/dev/null || true
+sudo pkill -9 -f "NeoLocalDev.watcher_daemon" 2>/dev/null || true
+sudo pkill -9 -f "NeoLocalDev.*watcher"     2>/dev/null || true
+sudo pkill -9 -f "NeoLocalDev"              2>/dev/null || true
+sudo pkill -9 -f "devpoka"                  2>/dev/null || true
+sudo pkill -9 -f "caddy run"               2>/dev/null || true
+
+# Release ports — prevents "Address already in use" on reinstall
+sudo fuser -k 9199/tcp 2>/dev/null || true
+sudo fuser -k 2019/tcp 2>/dev/null || true
+sudo fuser -k 443/tcp  2>/dev/null || true
+
+sleep 1
+echo -e "  ${GREEN}✓${NC} All processes stopped and ports released"
 
 # ─────────────────────────────────────────────────────────────
 # 2. Remove systemd service
@@ -103,10 +120,37 @@ echo -e "${CYAN}[7/9]${NC} Removing exported certificates..."
 sudo rm -rf "${USER_HOME}/neo-certs"
 echo -e "  ${GREEN}✓${NC} Removed ~/neo-certs"
 
-# 8. Remove CA from system trust store
+# 8. Remove CA from system trust store and mkcert CA files
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[8/9]${NC} Removing CA from system trust store..."
-# Debian/Ubuntu
+ACTUAL_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+
+# Remove from NSS DB (Chrome/Firefox) — mkcert stores it under the hostname as nickname
+if command -v certutil &>/dev/null; then
+    for db in "${USER_HOME}/.pki/nssdb" "/root/.pki/nssdb" /etc/pki/nssdb; do
+        if [ -d "$db" ]; then
+            # List all certs and remove any mkcert-generated ones
+            certutil -d "sql:${db}" -L 2>/dev/null | awk '{print $1}' | while read -r nick; do
+                case "$nick" in
+                    mkcert*|*localdev*|*"Neo LocalDev"*)
+                        sudo -u "$ACTUAL_USER" certutil -D -d "sql:${db}" -n "$nick" 2>/dev/null || true
+                        ;;
+                esac
+            done
+        fi
+    done
+fi
+
+# Run mkcert -uninstall as the actual user to clean system trust stores
+if command -v mkcert &>/dev/null; then
+    sudo -u "$ACTUAL_USER" HOME="$USER_HOME" mkcert -uninstall 2>/dev/null || true
+    # Remove the mkcert CA directory entirely so reinstall gets a fresh CA
+    rm -rf "${USER_HOME}/.local/share/mkcert" 2>/dev/null || true
+    rm -rf "${USER_HOME}/.config/mkcert" 2>/dev/null || true
+fi
+
+# Debian/Ubuntu system store
 sudo rm -f /usr/local/share/ca-certificates/neo-localdev-ca.crt
 sudo update-ca-certificates --fresh 2>/dev/null || true
 # RHEL/Fedora
@@ -115,15 +159,8 @@ sudo update-ca-trust 2>/dev/null || true
 # Arch
 sudo rm -f /etc/ca-certificates/trust-source/anchors/neo-localdev-ca.crt
 sudo trust extract-compat 2>/dev/null || true
-# NSS DB (Chrome)
-if command -v certutil &>/dev/null; then
-    for db in "${USER_HOME}/.pki/nssdb" /etc/pki/nssdb; do
-        if [ -d "$db" ]; then
-            certutil -D -d "sql:${db}" -n "Neo LocalDev CA" 2>/dev/null || true
-        fi
-    done
-fi
-echo -e "  ${GREEN}✓${NC} CA removed from trust stores"
+
+echo -e "  ${GREEN}✓${NC} CA removed from all trust stores"
 
 # ─────────────────────────────────────────────────────────────
 # 9. Remove sudoers policy

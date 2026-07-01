@@ -29,21 +29,24 @@ if ! command -v mkcert &>/dev/null; then
     curl -sJLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64"
     chmod +x mkcert-v*-linux-amd64
     sudo mv mkcert-v*-linux-amd64 /usr/local/bin/mkcert
-    
-    # Run mkcert -install as root but targeting the actual user's home directory for browser trust
-    USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
-    HOME="$USER_HOME" /usr/local/bin/mkcert -install
     echo -e "   ${GREEN}✓${NC} mkcert installed successfully"
 else
     echo -e "   ${GREEN}✓${NC} mkcert already installed"
 fi
 
+# Trust CA as the actual user (not root) so Chrome/Firefox NSS stores are updated correctly
+echo -e "   Trusting local CA in system and browser stores (as $ACTUAL_USER)..."
+USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+sudo -u "$ACTUAL_USER" HOME="$USER_HOME" /usr/local/bin/mkcert -install
+echo -e "   ${GREEN}✓${NC} CA trust installed for $ACTUAL_USER"
+
 # 3. Install neold globally
 echo -e "${CYAN}[3/4]${NC} Installing neold command globally..."
 sudo cp "${PROJECT_DIR}/neold" /usr/local/bin/neold
+sudo sed -i "s|# Find NeoLocalDev package directory|export PYTHONPATH=\"${PROJECT_DIR}:\${PYTHONPATH:-}\"\n# Find NeoLocalDev package directory|g" /usr/local/bin/neold
 sudo chmod +x /usr/local/bin/neold
 sudo rm -f /usr/local/bin/devctl
-echo -e "   ${GREEN}✓${NC} neold installed to /usr/local/bin/neold (removed old devctl)"
+echo -e "   ${GREEN}✓${NC} neold installed to /usr/local/bin/neold (removed old devctl with dynamic path)"
 
 # Configure MariaDB root user to allow passwordless local connections for development
 if command -v mysql &>/dev/null; then
@@ -62,8 +65,18 @@ sudo chmod 0440 "$SUDOERS_FILE"
 
 # 4. Initial configuration as the actual user
 echo -e "${CYAN}[4/4]${NC} Running initial configuration..."
-sudo -u "$ACTUAL_USER" python3 -m NeoLocalDev.cli setup
+sudo -u "$ACTUAL_USER" HOME="$USER_HOME" python3 -m NeoLocalDev.cli setup
 echo -e "   ${GREEN}✓${NC} Configuration ready"
+
+# Add dev.local to /etc/hosts if not already present
+DOMAIN="dev.local"
+HOSTS_ENTRY="127.0.0.1 ${DOMAIN}"
+if ! grep -qF "$HOSTS_ENTRY" /etc/hosts; then
+    echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts > /dev/null
+    echo -e "   ${GREEN}✓${NC} Added ${DOMAIN} to /etc/hosts"
+else
+    echo -e "   ${GREEN}✓${NC} ${DOMAIN} already in /etc/hosts"
+fi
 
 echo ""
 echo -e "${BLUE}${BOLD}  ╔══════════════════════════════════════════╗${NC}"

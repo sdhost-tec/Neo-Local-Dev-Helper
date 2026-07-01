@@ -5,7 +5,7 @@ from pathlib import Path
 
 logger = logging.getLogger("devpoka")
 
-RESERVED_PORTS = {80, 443, 3306, 9000, 9199, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010}
+RESERVED_PORTS = {80, 443, 3306, 9000, 9199, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90}
 
 def get_process_info(pid):
     try:
@@ -169,8 +169,8 @@ def detect_running_projects():
     # Sort by port to ensure stable sequential mapping
     projects.sort(key=lambda x: x["port"])
 
-    # Assign secure ports starting from 3001
-    start_secure_port = 3001
+    # Assign secure ports starting from 81
+    start_secure_port = 81
     for i, proj in enumerate(projects):
         proj["secure_port"] = start_secure_port + i
 

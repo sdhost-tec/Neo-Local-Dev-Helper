@@ -75,12 +75,38 @@ def _start_api_server():
     return proc
 
 def _start_caddy(cfg, caddyfile_path):
-    _stop_process("caddy")
     caddy_bin = shutil.which("caddy") or cfg.get("caddy_path", "caddy")
     log_dir = cfg.get("log_dir", str(Path.home() / ".NeoLocalDev" / "logs"))
     caddy_log = Path(log_dir) / "caddy.log"
     caddy_log.parent.mkdir(parents=True, exist_ok=True)
 
+    # Try live reload via Caddy admin API first (avoids downtime and port rebind issues)
+    try:
+        import urllib.request
+        with open(caddyfile_path, 'rb') as f:
+            caddyfile_data = f.read()
+        req = urllib.request.Request(
+            "http://127.0.0.1:2019/load",
+            data=caddyfile_data,
+            headers={"Content-Type": "text/caddyfile"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                logger.info("Caddy config reloaded via admin API")
+                # Update pid file if needed
+                pid_file = get_pid_file("caddy")
+                if not pid_file.exists():
+                    # Find caddy PID
+                    result = subprocess.run(["pgrep", "-f", "caddy run"], capture_output=True, text=True)
+                    if result.stdout.strip():
+                        pid_file.write_text(result.stdout.strip().split()[0])
+                return None
+    except Exception:
+        pass  # Admin API not available, fall back to full restart
+
+    # Full restart
+    _stop_process("caddy")
     proc = subprocess.Popen(
         [caddy_bin, "run", "--config", caddyfile_path],
         stdout=open(caddy_log, "a"),
@@ -88,7 +114,7 @@ def _start_caddy(cfg, caddyfile_path):
         stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
-    get_pid_file().write_text(str(proc.pid))
+    get_pid_file("caddy").write_text(str(proc.pid))
     logger.info(f"Caddy started (PID: {proc.pid})")
     time.sleep(1)
     return proc
@@ -147,6 +173,11 @@ def cmd_setup(args):
     logger.info(f"Dashboard will be available at: https://{domain}/admin/")
 
 def cmd_start(args):
+    # Warn immediately if running as root — causes permission issues on stop and cert trust
+    if os.geteuid() == 0:
+        logger.warning("⚠️  Running as root is not recommended. Use: neold start (without sudo)")
+        logger.warning("   Running as root means 'neold stop' may not be able to stop services.")
+
     logger.info("Starting Neo LocalDev helper...")
     cfg = cfgmod.load_config()
     domain = cfg["domain"]
@@ -217,10 +248,17 @@ def cmd_start(args):
 def cmd_stop(args):
     logger.info("Stopping Neo LocalDev helper...")
     # Stop watcher daemon subprocess
-    subprocess.run(["pkill", "-f", "NeoLocalDev.watcher_daemon"], capture_output=True)
-    subprocess.run(["pkill", "-f", "NeoLocalDev.*watcher"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "NeoLocalDev.watcher_daemon"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "NeoLocalDev.*watcher"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "NeoLocalDev.api_server"], capture_output=True)
     _stop_process("api")
     _stop_process("caddy")
+    # Force-kill any orphaned processes still holding these ports (even if running as root)
+    for port in ["9199", "2019", "443"]:
+        subprocess.run(["sudo", "fuser", "-k", f"{port}/tcp"], capture_output=True)
+    # Final hard kill of any remaining caddy/neold processes
+    subprocess.run(["sudo", "pkill", "-9", "-f", "caddy run"], capture_output=True)
+    subprocess.run(["sudo", "pkill", "-9", "-f", "NeoLocalDev"], capture_output=True)
     logger.info("Stopped.")
 
 def cmd_reload(args):

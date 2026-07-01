@@ -25,6 +25,10 @@ Built for solo developers and small teams who want a real dev server experience 
 
 > Think of it as **ngrok + nginx + a dev panel** — all in one lightweight Python tool that runs entirely on your machine.
 
+<div align="center">
+  <video src="assets/demo.webm" width="100%" controls></video>
+</div>
+
 ---
 
 ## ✨ Features
@@ -36,13 +40,25 @@ Built for solo developers and small teams who want a real dev server experience 
 - **Port Isolation** — All running dev servers are forced to bind to `127.0.0.1` only, preventing direct external connections
 - **HTTPS Only** — All traffic routes through SSL (via `mkcert`), no plain HTTP access
 
+#### 🛡️ Neo The Guardian Device Authentication Flow
+| 1. Device Requests Access | 2. Admin Receives & Approves Request |
+| :---: | :---: |
+| ![Device Requests Access](assets/request.Auth.jpg) | ![Admin Dashboard Popup](assets/auth-popup.png) |
+
+
 ### 🖥️ Web Control Dashboard
 - Beautiful dark glassmorphism UI at `https://dev.local/admin/`
 - Real-time CPU, RAM, and Disk gauges
 - Start/stop/restart services (MariaDB, Caddy, phpMyAdmin)
 - Live system logs (Caddy access/error, API server)
-- HTTP stress tester built-in
+- **HTTP Stress Tester** — Load test any running project with live CPU spike chart and failure breakdown
 - Guardian device manager — approve or reject network access requests
+
+<div align="center">
+
+![Stress Test Results with CPU Spike Chart](assets/stressTest.png)
+
+</div>
 
 ### 📦 PHP Extensions Manager
 - Browse all installed and available PHP extensions
@@ -87,8 +103,8 @@ Built for solo developers and small teams who want a real dev server experience 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/sdhost-tec/neo-localdev.git
-cd neo-localdev
+git clone https://github.com/sdhost-tec/Neo-Local-Dev-Helper.git
+cd Neo-Local-Dev-Helper
 ```
 
 ### 2. Run the setup script
@@ -132,7 +148,46 @@ Then open your browser at: **`https://dev.local/admin/`**
 
 ---
 
-## 📁 Project Structure
+## � Access from Android Devices
+
+To browse your local dev environment from your Android phone on the same Wi-Fi network:
+
+### 1. Map the local domain
+
+Install **[Virtual Switch Hosts](https://play.google.com/store/apps/details?id=com.virtual_switch_hosts.app)** from the Play Store — it lets you add custom `/etc/hosts` entries on Android without root.
+
+Open the app and add a new entry:
+
+```
+192.168.x.x    dev.local
+```
+
+> Replace `192.168.x.x` with your dev machine's LAN IP. You can find it in the dashboard under **Settings → LAN Address**.
+
+Enable the switch in the app.
+
+### 2. Trust the SSL certificate
+
+Since `mkcert` generates a local CA that Android doesn't trust by default, you need to install the root certificate:
+
+1. Download `rootCA.pem` from your dev machine — it's in the project root, or grab it directly:
+   ```
+   https://192.168.x.x/admin/rootCA.pem
+   ```
+2. On your Android phone go to **Settings → Security → Install certificate → CA certificate**
+3. Select the downloaded `rootCA.pem` file
+
+### 3. Browse
+
+Open Chrome on your phone and go to:
+
+```
+https://dev.local/admin/
+```
+
+---
+
+## �📁 Project Structure
 
 ```
 neo-localdev/
@@ -148,6 +203,7 @@ neo-localdev/
 │   ├── watcher.py              # File-system watcher for new projects
 │   └── watcher_daemon.py       # Background watcher subprocess entry point
 ├── neo.png                     # Application logo / favicon
+├── rootCA.pem                  # mkcert root CA — install on Android & other LAN devices
 ├── neold                       # Shell wrapper entrypoint script
 ├── setup.sh                    # Installer script (run with sudo)
 ├── uninstall.sh                # Full uninstaller (run with sudo)

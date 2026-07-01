@@ -49,11 +49,15 @@ def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=N
             path /guardian/*
         }}
         handle @guardian_pass {{
-            reverse_proxy 127.0.0.1:{api_port}
+            reverse_proxy 127.0.0.1:{api_port} {{
+                header_up X-Forwarded-For {{remote_host}}
+            }}
         }}
         handle {{
             rewrite * /guardian/unauthorized
-            reverse_proxy 127.0.0.1:{api_port}
+            reverse_proxy 127.0.0.1:{api_port} {{
+                header_up X-Forwarded-For {{remote_host}}
+            }}
         }}
     }}
 """
@@ -65,6 +69,8 @@ def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=N
             sec_port = proj.get("secure_port")
             orig_port = proj.get("port")
             if sec_port and orig_port:
+                # Use LAN IP for guardian redirect so phones without dev.local DNS can reach the page
+                guardian_redirect_host = lan_ip if lan_ip else domain
                 project_port_blocks += f"""
 :{sec_port} {{
     tls {ssl_cert} {ssl_key}
@@ -77,11 +83,22 @@ def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=N
             path /guardian/*
         }}
         handle @guardian_pass {{
-            reverse_proxy 127.0.0.1:{api_port}
+            reverse_proxy 127.0.0.1:{api_port} {{
+                header_up X-Forwarded-For {{remote_host}}
+            }}
         }}
         handle {{
-            redir https://{domain}/guardian/unauthorized
+            redir https://{guardian_redirect_host}/guardian/unauthorized?from=https://{{host}}{{uri}}
         }}
+    }}
+
+    @hmr {{
+        path /_next/webpack-hmr*
+    }}
+    reverse_proxy @hmr 127.0.0.1:{orig_port} {{
+        header_up Host localhost:{orig_port}
+        header_up Origin http://localhost:{orig_port}
+        header_up Referer http://localhost:{orig_port}/
     }}
 
     reverse_proxy 127.0.0.1:{orig_port}
@@ -130,7 +147,18 @@ def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=N
 }}
 """
 
-    content = domain_block + lan_block + project_port_blocks
+    # HTTP → HTTPS redirect block for all hostnames
+    http_redirect_block = f"""http://{domain} {{
+    redir https://{domain}{{uri}} permanent
+}}
+"""
+    if lan_ip:
+        http_redirect_block += f"""http://{lan_ip} {{
+    redir https://{lan_ip}{{uri}} permanent
+}}
+"""
+
+    content = http_redirect_block + domain_block + lan_block + project_port_blocks
 
     caddyfile_path.write_text(content)
     logger.info(f"Caddyfile generated at {caddyfile_path}")
