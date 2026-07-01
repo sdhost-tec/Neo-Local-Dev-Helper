@@ -292,7 +292,7 @@ Contributions, bug reports, and feature requests are welcome!
 
 ## 💌 Contact & Support
 
-- 📧 **Email:** [hq@sdhost.com](mailto:hq@sdhost.org)
+- 📧 **Email:** [hq@sdhost.org](mailto:hq@sdhost.org)
 - 🌐 **Website:** [sdhost.org](https://sdhost.org)
 - 🛡️ **Neo Guardian Portal:** [neo.sdhost.org](https://neo.sdhost.org/)
 
