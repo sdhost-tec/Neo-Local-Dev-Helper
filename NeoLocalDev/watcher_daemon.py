@@ -54,16 +54,13 @@ def _reload_proxy(projects):
 
     caddy_pid = _get_caddy_pid()
     if caddy_pid:
-        # Reload Caddy gracefully using SIGUSR1
         try:
-            import signal
-            import psutil
-            proc = psutil.Process(caddy_pid)
-            proc.send_signal(signal.SIGUSR1)
-            logger.info("Caddy reloaded via SIGUSR1")
+            caddy_bin = shutil.which("caddy") or cfg.get("caddy_path", "caddy")
+            subprocess.run([caddy_bin, "reload", "--config", caddyfile], check=True, capture_output=True)
+            logger.info("Caddy reloaded successfully using 'caddy reload'")
             return
         except Exception as e:
-            logger.warning(f"SIGUSR1 reload failed: {e}, restarting Caddy...")
+            logger.warning(f"Caddy reload command failed: {e}, restarting Caddy...")
 
     # Caddy not running — restart it
     caddy_bin = shutil.which("caddy") or cfg.get("caddy_path", "caddy")
@@ -88,13 +85,19 @@ def main():
     cfg = cfgmod.load_config()
     interval = cfg.get("watcher_interval", 3)
     last_projects = detect_running_projects()
+    last_ip = cfgmod.get_lan_ip()
 
     while True:
         try:
             current_projects = detect_running_projects()
+            current_ip = cfgmod.get_lan_ip()
 
             has_changed = False
-            if len(current_projects) != len(last_projects):
+            if current_ip != last_ip:
+                has_changed = True
+                logger.info(f"IP changed from {last_ip} to {current_ip}, triggering reload...")
+                last_ip = current_ip
+            elif len(current_projects) != len(last_projects):
                 has_changed = True
             else:
                 for p1, p2 in zip(current_projects, last_projects):
@@ -105,7 +108,7 @@ def main():
                         break
 
             if has_changed:
-                logger.info(f"Change detected ({len(last_projects)} → {len(current_projects)} projects), reloading proxy...")
+                logger.info(f"Change detected, reloading proxy...")
                 last_projects = current_projects
                 _reload_proxy(current_projects)
 

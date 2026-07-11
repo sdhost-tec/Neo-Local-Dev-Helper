@@ -385,16 +385,75 @@ def is_valid_ip(ip):
 
 def kill_process(pid):
     try:
-        proc = psutil.Process(pid)
-        proc.terminate()
-        proc.wait(timeout=3)
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            try:
+                child.terminate()
+            except Exception:
+                pass
+        try:
+            parent.terminate()
+        except Exception:
+            pass
+        
+        gone, alive = psutil.wait_procs(children + [parent], timeout=3)
+        for p in alive:
+            try:
+                p.kill()
+            except Exception:
+                pass
         return True
     except Exception:
+        return False
+
+def update_hosts_mapping(old_domain, new_domain, sudo_password):
+    script = f"""
+import sys
+hosts_path = "/etc/hosts"
+try:
+    with open(hosts_path, "r") as f:
+        lines = f.readlines()
+except Exception as e:
+    sys.stderr.write(str(e))
+    sys.exit(1)
+
+updated = False
+new_lines = []
+for line in lines:
+    parts = line.strip().split()
+    if len(parts) >= 2 and parts[0] == "127.0.0.1" and "{old_domain}" in parts:
+        line = line.replace("{old_domain}", "{new_domain}")
+        updated = True
+    new_lines.append(line)
+
+if not updated:
+    new_lines.append(f"127.0.0.1 {new_domain}\\n")
+
+try:
+    with open(hosts_path, "w") as f:
+        f.writelines(new_lines)
+except Exception as e:
+    sys.stderr.write(str(e))
+    sys.exit(1)
+"""
+    import tempfile
+    import sys
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(script)
+        temp_name = f.name
+
+    try:
+        import subprocess
+        cmd = f"echo '{sudo_password}' | sudo -S {sys.executable} {temp_name}"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return res.returncode == 0, res.stderr
+    finally:
         try:
-            psutil.Process(pid).kill()
-            return True
+            import os
+            os.unlink(temp_name)
         except Exception:
-            return False
+            pass
 
 class DashboardAPIHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -541,6 +600,11 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             system_status = instmod.inspect_system()
             lan_ip = get_lan_ip()
             
+            caddy_ips = []
+            ip_file = Path(cfg["ssl_dir"]) / "last_ip.txt"
+            if ip_file.exists():
+                caddy_ips = ip_file.read_text().strip().split(",")
+            
             # Additional running states
             system_status["caddy"]["running"] = self._caddy_running()
             system_status["mariadb"]["running"] = dbmod.is_db_running()
@@ -588,6 +652,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "domain": cfg["domain"],
                 "lan_ip": lan_ip,
+                "caddy_ips": caddy_ips,
                 "system": system_status,
                 "projects": projects,
                 "stats": stats,
@@ -914,8 +979,48 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 # Trigger proxy reload to update list immediately
                 self._trigger_reload()
                 self._send_json({"ok": True, "message": f"Project '{name}' stopped successfully."})
-            else:
-                self._send_json({"ok": False, "error": f"Failed to stop project '{name}'."})
+        elif path == "/api/domain/update":
+            body = self._read_body()
+            new_domain = body.get("domain", "").strip()
+            sudo_password = body.get("sudo_password", "")
+            
+            if not new_domain:
+                self._send_json({"ok": False, "error": "Domain is required"}, 400)
+                return
+            if not sudo_password:
+                self._send_json({"ok": False, "error": "sudo_required"}, 400)
+                return
+                
+            old_domain = cfg.get("domain", "dev.local")
+            
+            ok, err_msg = update_hosts_mapping(old_domain, new_domain, sudo_password)
+            if not ok:
+                self._send_json({"ok": False, "error": f"Failed to update /etc/hosts (check sudo password): {err_msg}"}, 500)
+                return
+                
+            cfg["domain"] = new_domain
+            cfgmod.save_config(cfg)
+            
+            try:
+                # Dynamically generate certs for new domain
+                certsmod.ensure_certs(new_domain, cfg["ssl_dir"])
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"Failed to generate SSL certs: {e}"}, 500)
+                return
+                
+            self._trigger_reload()
+            self._send_json({"ok": True, "message": f"Domain updated to '{new_domain}' successfully! Proxy is reloading..."})
+            return
+
+        elif path == "/api/certs/renew":
+            try:
+                domain = cfg.get("domain", "dev.local")
+                certsmod.ensure_certs(domain, cfg["ssl_dir"])
+                self._trigger_reload()
+                self._send_json({"ok": True, "message": "SSL certificates renewed and proxy reloaded."})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, 500)
+            return
 
         elif path == "/api/service/control":
             body = self._read_body()
@@ -924,12 +1029,16 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             if service not in ["caddy", "mariadb"]:
                 self._send_json({"ok": False, "error": "Unsupported service"}, 400)
                 return
-            if action not in ["start", "stop", "restart"]:
+            if action not in ["start", "stop", "restart", "reload"]:
                 self._send_json({"ok": False, "error": "Invalid action"}, 400)
                 return
 
             if service == "caddy":
-                ok = self._control_caddy(action)
+                if action == "reload":
+                    self._trigger_reload()
+                    ok = True
+                else:
+                    ok = self._control_caddy(action)
             else:
                 res = dbmod.control_service(action)
                 ok = res["ok"]
@@ -1101,30 +1210,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             
             if pid in SPAWNED_PROJECTS:
                 proc_info = SPAWNED_PROJECTS[pid]
+                ok = kill_process(pid)
                 try:
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                    time.sleep(0.5)
-                    if proc_info["process"].poll() is None:
-                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    proc_info["log_file"].close()
+                except Exception:
+                    pass
                     
-                    try:
-                        proc_info["log_file"].close()
-                    except Exception:
-                        pass
-                        
-                    del SPAWNED_PROJECTS[pid]
-                    save_spawned_projects()
-                    self._send_json({"ok": True, "message": f"Project stopped successfully"})
-                except Exception as e:
-                    kill_process(pid)
-                    try:
-                        proc_info["log_file"].close()
-                    except Exception:
-                        pass
-                    if pid in SPAWNED_PROJECTS:
-                        del SPAWNED_PROJECTS[pid]
-                    save_spawned_projects()
-                    self._send_json({"ok": True, "message": f"Stopped via fallback signal: {e}"})
+                del SPAWNED_PROJECTS[pid]
+                save_spawned_projects()
+                self._send_json({"ok": ok, "message": f"Project stopped successfully" if ok else "Failed to stop project cleanly"})
             else:
                 ok = kill_process(pid)
                 self._send_json({"ok": ok, "message": "Process terminate signal sent"})

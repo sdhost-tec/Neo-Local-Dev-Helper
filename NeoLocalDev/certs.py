@@ -102,6 +102,26 @@ def export_rootca_to_project(project_root):
         return None
 
 
+def get_all_local_ips():
+    ips = []
+    try:
+        import psutil
+        for interface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET:
+                    if addr.address != "127.0.0.1":
+                        ips.append(addr.address)
+    except Exception:
+        pass
+    
+    # Fallback to get_lan_ip if psutil failed or returned empty
+    if not ips:
+        lan = get_lan_ip()
+        if lan:
+            ips.append(lan)
+    return sorted(list(set(ips)))
+
+
 def ensure_certs(domain, ssl_dir):
     ssl_path = Path(ssl_dir)
     ssl_path.mkdir(parents=True, exist_ok=True)
@@ -110,16 +130,18 @@ def ensure_certs(domain, ssl_dir):
     key_file = ssl_path / f"{domain}-key.pem"
     ip_file = ssl_path / "last_ip.txt"
 
-    lan_ip = get_lan_ip()
-    last_ip = ip_file.read_text().strip() if ip_file.exists() else None
+    # Get all active local IPs (LAN, VPNs, Tailscale, etc.)
+    current_ips = get_all_local_ips()
+    current_ips_str = ",".join(current_ips)
+    last_ips_str = ip_file.read_text().strip() if ip_file.exists() else None
 
-    # If IP has changed, force regeneration of certificates
-    if lan_ip != last_ip:
-        logger.info(f"LAN IP changed from {last_ip} to {lan_ip}. Regenerating certificates...")
+    # If active IPs have changed, force regeneration of certificates
+    if current_ips_str != last_ips_str:
+        logger.info(f"Local IPs changed from {last_ips_str} to {current_ips_str}. Regenerating certificates...")
         cert_file.unlink(missing_ok=True)
         key_file.unlink(missing_ok=True)
-        if lan_ip:
-            ip_file.write_text(lan_ip)
+        if current_ips:
+            ip_file.write_text(current_ips_str)
         else:
             ip_file.unlink(missing_ok=True)
 
@@ -128,9 +150,7 @@ def ensure_certs(domain, ssl_dir):
         return str(cert_file), str(key_file)
 
     mkcert = ensure_mkcert()
-    hosts = [domain, "localhost", "127.0.0.1"]
-    if lan_ip:
-        hosts.append(lan_ip)
+    hosts = [domain, "localhost", "127.0.0.1"] + current_ips
 
     logger.info(f"Creating SSL certs for {domain} with hosts: {hosts}")
     result = subprocess.run(

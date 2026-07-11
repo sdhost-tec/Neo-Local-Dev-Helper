@@ -266,6 +266,25 @@ const Dashboard = {
 
       <!-- Main -->
       <main class="main-content">
+        <!-- Network IP Sync Banner -->
+        <div class="network-banner" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.75rem 1.25rem;margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem">
+          <div style="display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;font-size:0.875rem">
+            <div style="display:flex;align-items:center;gap:0.5rem">
+              <span style="color:var(--muted)">💻 Device IP:</span>
+              <code style="color:var(--accent2);font-weight:600">{{ status.lan_ip }}</code>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.5rem">
+              <span style="color:var(--muted)">🛡️ Caddy Active IP:</span>
+              <code style="color:var(--green);font-weight:600">{{ status.caddy_ips && status.caddy_ips.length ? status.caddy_ips.join(', ') : 'None' }}</code>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.5rem">
+            <span v-if="isIpOutOfSync" class="badge badge-warn" style="font-size:0.75rem;padding:0.2rem 0.5rem;animation:pulse-badge 1.5s infinite">⚠️ IPs Out of Sync!</span>
+            <span v-else class="badge badge-ok" style="font-size:0.75rem;padding:0.2rem 0.5rem">✓ Connected & synced</span>
+            <button class="btn btn-outline btn-xs" style="padding:0.2rem 0.5rem" @click="forceReloadCaddy" title="Force reload Caddy with current IP">↻ Force Sync</button>
+          </div>
+        </div>
+
         <!-- Metrics Row -->
         <div class="metrics-row" style="margin-bottom:1.75rem">
           <div class="metric-card" v-for="g in gauges" :key="g.id">
@@ -287,6 +306,7 @@ const Dashboard = {
           <launcher-tab   v-if="activeTab==='launcher'" :status="status" @toast="$emit('toast',$event)" @reload="$emit('reload-status')" />
           <database-tab   v-if="activeTab==='database'" :status="status" @toast="$emit('toast',$event)" />
           <services-tab   v-if="activeTab==='services'" :status="status" @toast="$emit('toast',$event)" @reload="$emit('reload-status')" />
+          <domain-tab     v-if="activeTab==='domain'"   :status="status" @toast="$emit('toast',$event)" @reload="$emit('reload-status')" />
           <settings-tab   v-if="activeTab==='settings'" :status="status" @toast="$emit('toast',$event)" @reload="$emit('reload-status')" @logout="$emit('logout')" />
         </keep-alive>
       </main>
@@ -303,10 +323,11 @@ const Dashboard = {
     const pendingCount = computed(() => pendingReqs.value.length);
 
     const navItems = [
-      { id: 'proxies',  icon: '🌐', label: 'Active Proxies' },
+      { id: 'proxies',  icon: '📡', label: 'Active Proxies' },
       { id: 'launcher', icon: '🚀', label: 'Project Launcher' },
       { id: 'database', icon: '🗄️', label: 'Database' },
       { id: 'services', icon: '⚡', label: 'Services' },
+      { id: 'domain',   icon: '🌐', label: 'Domain Manager' },
       { id: 'settings', icon: '⚙️', label: 'Settings' },
     ];
 
@@ -354,10 +375,24 @@ const Dashboard = {
       emit('toast', `Request from ${ip} rejected.`);
     }
 
+    const isIpOutOfSync = computed(() => {
+      const lan = props.status?.lan_ip;
+      const caddy = props.status?.caddy_ips || [];
+      if (!lan || lan === 'unknown' || !caddy.length) return false;
+      return !caddy.includes(lan);
+    });
+
+    async function forceReloadCaddy() {
+      emit('toast', 'Force-syncing Caddy config...');
+      const r = await api('/service/control', 'POST', { service: 'caddy', action: 'reload' });
+      emit('toast', r.ok ? 'Caddy config reloaded and synced!' : (r.error || 'Failed to sync'), !r.ok);
+      emit('reload-status');
+    }
+
     onMounted(() => { pollGuardian(); guardianTimer = setInterval(pollGuardian, 4000); });
     onUnmounted(() => clearInterval(guardianTimer));
 
-    return { activeTab, navItems, gauges, gaugeVal, pendingCount, popupIp, approvePopup, rejectPopup };
+    return { activeTab, navItems, gauges, gaugeVal, pendingCount, popupIp, approvePopup, rejectPopup, isIpOutOfSync, forceReloadCaddy };
   }
 };
 
@@ -490,7 +525,10 @@ const LauncherTab = {
 
       <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:1.25rem">
         <div class="panel" style="margin:0">
-          <div class="panel-title">🔎 Available Projects</div>
+          <div class="panel-header" style="margin-bottom:0.75rem">
+            <div class="panel-title">🔎 Available Projects</div>
+            <input v-model="searchQuery" class="input-control" placeholder="Search projects…" style="max-width:180px;padding:0.3rem 0.6rem;font-size:0.78rem">
+          </div>
           <div style="max-height:480px;overflow-y:auto">
             <div v-if="discovered.length===0&&custom.length===0" style="color:var(--muted);text-align:center;padding:2rem;font-size:0.875rem">
               Set a root folder or add a project above.
@@ -550,10 +588,22 @@ const LauncherTab = {
     const explorerOpen = ref(false), explorerTarget = ref('');
     const explorerCurrent = ref(''), explorerParent = ref(''), explorerDirs = ref([]);
 
-    const allProjects = computed(() => [
-      ...discovered.value.map(p => ({ ...p, isCustom: false })),
-      ...custom.value.map(p => ({ ...p, isCustom: true }))
-    ]);
+    const searchQuery = ref('');
+
+    const allProjects = computed(() => {
+      const list = [
+        ...discovered.value.map(p => ({ ...p, isCustom: false })),
+        ...custom.value.map(p => ({ ...p, isCustom: true }))
+      ];
+      
+      const query = searchQuery.value.trim().toLowerCase();
+      let filtered = list;
+      if (query) {
+        filtered = list.filter(p => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
+      }
+      
+      return filtered.sort((a, b) => a.name.localeCompare(b.name));
+    });
 
     async function load() {
       const [discRes, spawnRes] = await Promise.all([
@@ -640,7 +690,7 @@ const LauncherTab = {
       rootPath, singlePath, discovered, custom, spawned, allProjects, spawnedMap,
       explorerOpen, explorerCurrent, explorerParent, explorerDirs,
       saveRoot, addProject, launchProject, stopSpawned, removeProject, renameProject,
-      openExplorer, loadExplorer, confirmExplorer
+      openExplorer, loadExplorer, confirmExplorer, searchQuery
     };
   }
 };
@@ -1401,6 +1451,139 @@ const SettingsTab = {
     return { newUser, newPass, pendingList, logContent, logType, logLines, logLabels, consoleEl, linuxInstructions, saveCreds, approve, reject, revoke, exportCA, loadLogs, clearLogs, isSystemIp };
   }
 };
+// ── Tab: Domain Manager ─────────────────────────────────────────
+const DomainTab = {
+  props: ['status'],
+  emits: ['toast', 'reload'],
+  template: `
+    <div class="fade-enter">
+      <div class="page-header">
+        <div class="page-title">🌐 Domain Manager <span>change domain & SSL certificates</span></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:1.25rem">
+        <!-- Configuration Panel -->
+        <div class="panel" style="margin:0">
+          <div class="panel-title" style="margin-bottom:1.25rem">⚙️ Configure Domain</div>
+          <form @submit.prevent="updateDomain">
+            <div class="form-group">
+              <label>Current Local Domain</label>
+              <input :value="status.domain" class="input-control" readonly style="opacity:0.6;background:rgba(0,0,0,0.1)">
+            </div>
+            <div class="form-group">
+              <label>New Local Domain</label>
+              <input v-model="newDomain" class="input-control" required placeholder="e.g. dev.lo.com">
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;padding:0.75rem" :disabled="loading">
+              {{ loading ? 'Saving & Generating Certs…' : 'Update Domain' }}
+            </button>
+          </form>
+        </div>
+
+        <!-- SSL Status Panel -->
+        <div class="panel" style="margin:0">
+          <div class="panel-title" style="margin-bottom:1.25rem">🔒 SSL / CA Certificates</div>
+          <div style="display:flex;flex-direction:column;gap:0.85rem;font-size:0.875rem;color:var(--muted)">
+            <p style="margin:0">Install the Root CA certificate on external devices to trust HTTPS connection.</p>
+            <div style="background:rgba(0,0,0,0.2);border-radius:8px;padding:0.85rem;display:flex;flex-direction:column;gap:0.6rem">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-weight:600;color:var(--text)">rootCA.pem</span>
+                <span :class="['badge', status.rootca_available ? 'badge-ok' : 'badge-warn']">
+                  {{ status.rootca_available ? '✓ Ready' : '⚠ Not exported' }}
+                </span>
+              </div>
+              <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                <a :href="status.rootca_available ? '/admin/rootCA.pem' : '#'" download="rootCA.pem"
+                  class="btn btn-primary btn-sm" style="flex:1;min-width:140px;text-decoration:none">
+                  ⬇️ Download rootCA.pem
+                </a>
+                <button class="btn btn-outline btn-sm" style="flex:1;min-width:120px" @click="exportCA">🔄 Re-export CA</button>
+              </div>
+            </div>
+            <button class="btn btn-outline btn-sm" @click="renewCerts">🔄 Force Renew SSL Certificate</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sudo Modal -->
+      <div v-if="sudoOpen" class="modal-backdrop" @click.self="sudoOpen=false">
+        <div class="modal-card" style="text-align:center;max-width:420px">
+          <div style="font-size:2.5rem;margin-bottom:0.75rem">🔒</div>
+          <div class="modal-title" style="justify-content:center">Admin Privileges Required</div>
+          <p style="color:var(--muted);font-size:0.82rem;margin-bottom:1.25rem">
+            This action requires sudo to modify \`/etc/hosts\` and apply the new domain configuration.
+          </p>
+          <input v-model="sudoPwd" type="password" class="input-control"
+            placeholder="Enter your sudo password…"
+            style="text-align:center;margin-bottom:1rem"
+            @keydown.enter="confirmSudo">
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn btn-outline" style="flex:1" @click="sudoOpen=false">Cancel</button>
+            <button class="btn btn-primary" style="flex:1;background:var(--red);border-color:var(--red)" @click="confirmSudo">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+  setup(props, { emit }) {
+    const newDomain = ref('');
+    const loading = ref(false);
+    const sudoOpen = ref(false), sudoPwd = ref(''), cachedPwd = ref('');
+    let sudoResolve = null;
+
+    function openSudo() {
+      sudoPwd.value = '';
+      sudoOpen.value = true;
+      return new Promise(res => sudoResolve = res);
+    }
+
+    function confirmSudo() {
+      sudoOpen.value = false;
+      if (sudoResolve) { sudoResolve(sudoPwd.value); sudoResolve = null; }
+    }
+
+    async function updateDomain() {
+      const dom = newDomain.value.trim();
+      if (!dom || dom === props.status.domain) return;
+      
+      loading.value = true;
+      let r = await api('/domain/update', 'POST', { domain: dom, sudo_password: cachedPwd.value });
+      
+      if (r.error === 'sudo_required') {
+        const pwd = await openSudo();
+        if (!pwd) { loading.value = false; return; }
+        cachedPwd.value = pwd;
+        r = await api('/domain/update', 'POST', { domain: dom, sudo_password: pwd });
+      }
+
+      loading.value = false;
+      emit('toast', r.ok ? r.message : r.error, !r.ok);
+      if (r.ok) {
+        newDomain.value = '';
+        emit('reload');
+        // Smoothly redirect to new domain
+        setTimeout(() => {
+          window.location.href = `https://\${dom}/admin/`;
+        }, 2000);
+      }
+    }
+
+    async function exportCA() {
+      const r = await api('/certs/export');
+      emit('toast', r.ok ? r.message : r.error, !r.ok);
+      emit('reload');
+    }
+
+    async function renewCerts() {
+      emit('toast', 'Renewing SSL certificates...');
+      const r = await api('/certs/renew', 'POST');
+      emit('toast', r.ok ? r.message : r.error, !r.ok);
+      emit('reload');
+    }
+
+    return { newDomain, loading, sudoOpen, sudoPwd, confirmSudo, updateDomain, exportCA, renewCerts };
+  }
+};
 
 // ── Mount App ─────────────────────────────────────────────────
 const app = createApp(App);
@@ -1414,6 +1597,7 @@ app.component('LauncherTab',  LauncherTab);
 app.component('DatabaseTab',  DatabaseTab);
 app.component('ServicesTab',  ServicesTab);
 app.component('SettingsTab',  SettingsTab);
+app.component('DomainTab',    DomainTab);
 app.component('CustomModal',  CustomModal);
 
 // Register sub-components on their parents
