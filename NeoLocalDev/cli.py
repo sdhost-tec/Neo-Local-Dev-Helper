@@ -343,15 +343,77 @@ def cmd_cert_trust(args):
     else:
         logger.error("Failed to repair trust stores.")
 
+def cmd_allow_ip(args):
+    ip = getattr(args, "ip", None)
+    if not ip:
+        print("Usage: neold allow-ip <IP_ADDRESS|all>")
+        return
+    cfg = cfgmod.load_config()
+    allowed = cfg.get("allowed_ips", ["127.0.0.1", "::1"])
+
+    targets = ["0.0.0.0/0", "::/0"] if ip.lower() in ("all", "0.0.0.0", "any") else [ip]
+    added = False
+    for target in targets:
+        if target not in allowed:
+            allowed.append(target)
+            added = True
+
+    if added:
+        cfg["allowed_ips"] = allowed
+        cfgmod.save_config(cfg)
+        print(f"✅ IP '{ip}' has been successfully added to allowed_ips.")
+        if _is_running("caddy"):
+            _reload_proxy()
+            print("🔄 Caddy proxy configuration reloaded.")
+    else:
+        print(f"ℹ️ IP '{ip}' is already in allowed_ips.")
+
+def cmd_auth(args):
+    cfg = cfgmod.load_config()
+    user = getattr(args, "username", None)
+    password = getattr(args, "password", None)
+    if user and password:
+        cfg["admin_username"] = user
+        cfg["admin_password"] = password
+        cfgmod.save_config(cfg)
+        print(f"✅ Admin credentials updated successfully!")
+        print(f"   Username: {user}")
+        print(f"   Password: {'*' * len(password)}")
+    else:
+        print(f"\n🔐 Current Admin Credentials:")
+        print(f"   Username: {cfg.get('admin_username', 'admin')}")
+        print(f"   Password: {cfg.get('admin_password', 'admin')}")
+        print(f"\nTo change credentials run: neold auth <new_username> <new_password>\n")
+
 def main():
     setup_logging()
 
     parser = argparse.ArgumentParser(prog="neold", description="Neo LocalDev helper - Lightweight Local Development Gateway")
-    parser.add_argument("command", nargs="?", default="status",
-                        choices=["setup", "start", "stop", "reload", "status", "config", "cert-renew", "cert-trust"])
-    parser.add_argument("-f", "--foreground", action="store_true", help="Keep process alive in foreground")
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    subparsers.add_parser("setup", help="Run initial setup and certificate generation")
+    
+    start_p = subparsers.add_parser("start", help="Start gateway, API, and watcher")
+    start_p.add_argument("-f", "--foreground", action="store_true", help="Keep process alive in foreground")
+    
+    subparsers.add_parser("stop", help="Stop all running Neo LocalDev processes")
+    subparsers.add_parser("reload", help="Reload proxy configuration")
+    subparsers.add_parser("status", help="Show system status and proxied projects")
+    subparsers.add_parser("config", help="View current configuration")
+    subparsers.add_parser("cert-renew", help="Renew local SSL certificates")
+    subparsers.add_parser("cert-trust", help="Repair system and browser certificate trust")
+
+    allow_p = subparsers.add_parser("allow-ip", help="Add an IP address to allowed_ips whitelist")
+    allow_p.add_argument("ip", help="IP address or CIDR (e.g. 217.164.11.160 or 'all')")
+
+    auth_p = subparsers.add_parser("auth", help="View or update admin credentials")
+    auth_p.add_argument("username", nargs="?", default=None, help="New admin username (optional)")
+    auth_p.add_argument("password", nargs="?", default=None, help="New admin password (optional)")
 
     args = parser.parse_args()
+
+    if not args.command:
+        args.command = "status"
 
     commands = {
         "setup": cmd_setup,
@@ -362,9 +424,14 @@ def main():
         "config": cmd_config,
         "cert-renew": cmd_cert_renew,
         "cert-trust": cmd_cert_trust,
+        "allow-ip": cmd_allow_ip,
+        "auth": cmd_auth,
     }
 
-    commands[args.command](args)
+    if args.command in commands:
+        commands[args.command](args)
+    else:
+        parser.print_help()
 
 if __name__ == "__main__":
     main()
