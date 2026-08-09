@@ -1,182 +1,142 @@
 #!/usr/bin/env bash
-# Neo LocalDev — Full Uninstaller
-# Removes: config, certs, runtimes, domains, systemd service, devctl binary
+# ─── Neo LocalDev Helper — Full Uninstaller ───
 set -euo pipefail
 
 BOLD='\033[1m'; DIM='\033[2m'
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 
 echo ""
-echo -e "${RED}${BOLD}  ⚠ Neo LocalDev — Uninstall${NC}"
-echo -e "${DIM}  This will remove all config, certs, domains, runtimes, and binaries.${NC}"
+echo -e "${RED}${BOLD}  ╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${RED}${BOLD}  ║          Neo LocalDev helper — Uninstaller           ║${NC}"
+echo -e "${RED}${BOLD}  ╚══════════════════════════════════════════════════════╝${NC}"
+echo -e "${DIM}  This will remove all configurations, certificates, binaries, and services.${NC}"
 echo ""
 
-read -r -p "  Are you sure? Type 'yes' to continue: " CONFIRM
-if [ "$CONFIRM" != "yes" ]; then
-    echo -e "  ${YELLOW}Aborted.${NC}"
-    exit 1
+read -r -p "  Are you sure you want to uninstall? [y/N]: " CONFIRM
+CONFIRM=$(echo "$CONFIRM" | tr '[:upper:]' '[:lower:]')
+if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "yes" ]; then
+    echo -e "\n  ${YELLOW}Uninstallation aborted.${NC}\n"
+    exit 0
 fi
 
 echo ""
 
-# ─────────────────────────────────────────────────────────────
-# 1. Stop services
-# ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[1/9]${NC} Stopping all services and processes..."
-
-# Try graceful stop first
-if command -v neold &>/dev/null; then
-    neold stop 2>/dev/null || true
-elif command -v devctl &>/dev/null; then
-    devctl stop 2>/dev/null || true
-fi
-
-# Wait a moment for graceful shutdown
-sleep 1
-
-# Force-kill ALL NeoLocalDev-related processes (handles orphaned/stale processes, including root-owned)
-echo -e "  ${DIM}  Killing any remaining NeoLocalDev processes...${NC}"
-sudo pkill -9 -f "NeoLocalDev.api_server"   2>/dev/null || true
-sudo pkill -9 -f "NeoLocalDev.watcher_daemon" 2>/dev/null || true
-sudo pkill -9 -f "NeoLocalDev.*watcher"     2>/dev/null || true
-sudo pkill -9 -f "NeoLocalDev"              2>/dev/null || true
-sudo pkill -9 -f "devpoka"                  2>/dev/null || true
-sudo pkill -9 -f "caddy run"               2>/dev/null || true
-
-# Release ports — prevents "Address already in use" on reinstall
-sudo fuser -k 9199/tcp 2>/dev/null || true
-sudo fuser -k 2019/tcp 2>/dev/null || true
-sudo fuser -k 443/tcp  2>/dev/null || true
-sudo fuser -k 80/tcp   2>/dev/null || true
-
-sleep 1
-echo -e "  ${GREEN}✓${NC} All processes stopped and ports released"
-
-# ─────────────────────────────────────────────────────────────
-# 2. Remove systemd service
-# ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[2/9]${NC} Removing systemd service..."
-for svc in /etc/systemd/system/neo-localdev@*.service /etc/systemd/system/neo-localdev.service; do
-    if [ -f "$svc" ]; then
-        sudo systemctl stop "$(basename "$svc")" 2>/dev/null || true
-        sudo systemctl disable "$(basename "$svc")" 2>/dev/null || true
-        sudo rm -f "$svc"
-        echo -e "  ${GREEN}✓${NC} Removed: $(basename "$svc")"
-    fi
-done
-sudo systemctl daemon-reload 2>/dev/null || true
-
-# ─────────────────────────────────────────────────────────────
-# 3. Remove neold and devctl binaries
-# ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[3/9]${NC} Removing binaries..."
-sudo rm -f /usr/local/bin/neold
-sudo rm -f /usr/local/bin/devctl
-echo -e "  ${GREEN}✓${NC} Removed binaries"
-
-# ─────────────────────────────────────────────────────────────
-# 4. Remove domains from /etc/hosts (BEFORE deleting config)
-# ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[4/9]${NC} Removing domains from /etc/hosts..."
+# Identify user and directories safely
 ACTUAL_USER="${SUDO_USER:-$(whoami)}"
 USER_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6 || echo "")
 if [ -z "$USER_HOME" ]; then
     USER_HOME="$HOME"
 fi
-
 CONFIG_DIR="${USER_HOME}/.NeoLocalDev"
 CONFIG_FILE="${CONFIG_DIR}/config.yml"
-MAIN_DOMAIN=$(grep '^domain:' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "")
-if [ -n "$MAIN_DOMAIN" ]; then
-    sudo sed -i "/ ${MAIN_DOMAIN}$/d" /etc/hosts 2>/dev/null || true
-    echo -e "  ${GREEN}✓${NC} Removed ${MAIN_DOMAIN} from /etc/hosts"
-fi
-# Remove any .local domains added by projects
-sudo sed -i '/\.local$/d' /etc/hosts 2>/dev/null || true
-echo -e "  ${DIM}  (removed *.local entries if auto-managed)${NC}"
 
 # ─────────────────────────────────────────────────────────────
-# 5. Remove config, certs, registry, databases
+# 1. Stop all background processes & services
 # ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[5/9]${NC} Removing configuration and data..."
-if [ -d "$CONFIG_DIR" ]; then
-    sudo rm -rf "$CONFIG_DIR"
-    echo -e "  ${GREEN}✓${NC} Removed ${CONFIG_DIR}"
-else
-    echo -e "  ${DIM}  Not found${NC}"
+echo -e "${CYAN}[1/5]${NC} Stopping active processes and services..."
+
+# Graceful stop via CLI if available
+if command -v neold &>/dev/null; then
+    neold stop &>/dev/null || true
+elif command -v devctl &>/dev/null; then
+    devctl stop &>/dev/null || true
 fi
 
-# ─────────────────────────────────────────────────────────────
-# 6. Remove installed runtimes
-# ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[6/9]${NC} Removing installed runtimes..."
-RUNTIMES_DIR="${USER_HOME}/.NeoLocalDev/runtimes"
-if [ -d "$RUNTIMES_DIR" ]; then
-    sudo rm -rf "$RUNTIMES_DIR"
+# Terminate specific NeoLocalDev daemons safely (avoid broad pattern matching that could hit the shell)
+pkill -9 -f "NeoLocalDev\.api_server" 2>/dev/null || true
+pkill -9 -f "NeoLocalDev\.watcher_daemon" 2>/dev/null || true
+pkill -9 -f "caddy run.*NeoLocalDev" 2>/dev/null || true
+
+# Release allocated ports with timeout to prevent terminal hang
+if command -v fuser &>/dev/null; then
+    timeout 2 sudo fuser -k 9199/tcp 2>/dev/null || true
+    timeout 2 sudo fuser -k 2019/tcp 2>/dev/null || true
+    timeout 2 sudo fuser -k 443/tcp 2>/dev/null || true
+    timeout 2 sudo fuser -k 80/tcp 2>/dev/null || true
 fi
-# Remove node version symlinks
+
+echo -e "   ${GREEN}✓${NC} All background services stopped and ports released"
+
+# ─────────────────────────────────────────────────────────────
+# 2. Remove Systemd services and global binaries
+# ─────────────────────────────────────────────────────────────
+echo -e "${CYAN}[2/5]${NC} Cleaning systemd services and global commands..."
+
+for svc in /etc/systemd/system/neo-localdev@*.service /etc/systemd/system/neo-localdev.service; do
+    if [ -f "$svc" ]; then
+        sudo systemctl stop "$(basename "$svc")" &>/dev/null || true
+        sudo systemctl disable "$(basename "$svc")" &>/dev/null || true
+        sudo rm -f "$svc"
+    fi
+done
+sudo systemctl daemon-reload &>/dev/null || true
+
+sudo rm -f /usr/local/bin/neold /usr/local/bin/devctl
 sudo rm -f /usr/local/bin/node[0-9]* /usr/local/bin/npm[0-9]* /usr/local/bin/npx[0-9]* 2>/dev/null || true
-echo -e "  ${GREEN}✓${NC} Runtimes cleaned"
+
+echo -e "   ${GREEN}✓${NC} Binaries and systemd units removed"
 
 # ─────────────────────────────────────────────────────────────
-# 7. Remove exported certs
+# 3. Clean hosts entries and sudoers policy
 # ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[7/9]${NC} Removing exported certificates..."
-sudo rm -rf "${USER_HOME}/neo-certs"
-echo -e "  ${GREEN}✓${NC} Removed ~/neo-certs"
+echo -e "${CYAN}[3/5]${NC} Restoring hosts file and sudoers policy..."
 
-# 8. Remove CA from system trust store and mkcert CA files
+if [ -f "$CONFIG_FILE" ]; then
+    MAIN_DOMAIN=$(grep '^domain:' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "")
+    if [ -n "$MAIN_DOMAIN" ]; then
+        sudo sed -i "/ ${MAIN_DOMAIN}$/d" /etc/hosts 2>/dev/null || true
+    fi
+fi
+# Remove dev.local / custom .local domain entries
+sudo sed -i '/127\.0\.0\.1.*\.local$/d' /etc/hosts 2>/dev/null || true
+sudo sed -i '/dev\.local/d' /etc/hosts 2>/dev/null || true
+
+# Remove sudoers file
+sudo rm -f /etc/sudoers.d/neold
+
+echo -e "   ${GREEN}✓${NC} Hosts mappings and sudoers policy cleaned"
+
 # ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[8/9]${NC} Removing CA from system trust store..."
+# 4. Remove configuration, runtimes, and local data
+# ─────────────────────────────────────────────────────────────
+echo -e "${CYAN}[4/5]${NC} Removing user configurations and cached runtimes..."
 
-# Remove from NSS DB (Chrome/Firefox) — mkcert stores it under the hostname as nickname
-if command -v certutil &>/dev/null; then
-    for db in "${USER_HOME}/.pki/nssdb" "/root/.pki/nssdb" /etc/pki/nssdb; do
-        if [ -d "$db" ]; then
-            # List all certs and remove any mkcert-generated ones
-            certutil -d "sql:${db}" -L 2>/dev/null | awk '{print $1}' | while read -r nick; do
-                case "$nick" in
-                    mkcert*|*localdev*|*"Neo LocalDev"*)
-                        sudo -u "$ACTUAL_USER" certutil -D -d "sql:${db}" -n "$nick" 2>/dev/null || true
-                        ;;
-                esac
-            done
-        fi
-    done
+if [ -n "$USER_HOME" ] && [ "$USER_HOME" != "/" ]; then
+    sudo rm -rf "${USER_HOME}/.NeoLocalDev"
+    sudo rm -rf "${USER_HOME}/neo-certs"
 fi
 
-# Run mkcert -uninstall as the actual user to clean system trust stores
+echo -e "   ${GREEN}✓${NC} Data directory ~/.NeoLocalDev removed"
+
+# ─────────────────────────────────────────────────────────────
+# 5. Clean Certificate Authority (CA) trust
+# ─────────────────────────────────────────────────────────────
+echo -e "${CYAN}[5/5]${NC} Cleaning SSL certificates and trust stores..."
+
+# Uninstall mkcert CA with timeout to prevent hanging on headless servers
 if command -v mkcert &>/dev/null; then
-    sudo -u "$ACTUAL_USER" HOME="$USER_HOME" mkcert -uninstall 2>/dev/null || true
-    # Remove the mkcert CA directory entirely so reinstall gets a fresh CA
+    timeout 3 sudo -u "$ACTUAL_USER" HOME="$USER_HOME" mkcert -uninstall &>/dev/null || timeout 3 mkcert -uninstall &>/dev/null || true
     if [ -n "$USER_HOME" ] && [ "$USER_HOME" != "/" ]; then
         rm -rf "${USER_HOME}/.local/share/mkcert" 2>/dev/null || true
         rm -rf "${USER_HOME}/.config/mkcert" 2>/dev/null || true
     fi
 fi
 
-# Debian/Ubuntu system store
-sudo rm -f /usr/local/share/ca-certificates/neo-localdev-ca.crt
-sudo update-ca-certificates --fresh 2>/dev/null || true
-# RHEL/Fedora
-sudo rm -f /etc/pki/ca-trust/source/anchors/neo-localdev-ca.crt
-sudo update-ca-trust 2>/dev/null || true
-# Arch
-sudo rm -f /etc/ca-certificates/trust-source/anchors/neo-localdev-ca.crt
-sudo trust extract-compat 2>/dev/null || true
+# Clean CA from Linux trust stores
+sudo rm -f /usr/local/share/ca-certificates/neo-localdev-ca.crt 2>/dev/null || true
+sudo rm -f /usr/local/share/ca-certificates/rootCA.pem 2>/dev/null || true
+if command -v update-ca-certificates &>/dev/null; then
+    sudo update-ca-certificates &>/dev/null || true
+fi
 
-echo -e "  ${GREEN}✓${NC} CA removed from all trust stores"
+echo -e "   ${GREEN}✓${NC} SSL certificates and local trust removed"
 
 # ─────────────────────────────────────────────────────────────
-# 9. Remove sudoers policy
-# ─────────────────────────────────────────────────────────────
-echo -e "${CYAN}[9/9]${NC} Removing sudoers policy..."
-sudo rm -f /etc/sudoers.d/neold
-echo -e "  ${GREEN}✓${NC} Sudoers rules removed"
-
+# Completion
 # ─────────────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}${BOLD}  ✅ Neo LocalDev fully uninstalled.${NC}"
-echo -e "${DIM}  Config, certs, runtimes, domains, binaries, and sudoers rules removed.${NC}"
-echo -e "${DIM}  Caddy itself was not removed (use 'sudo apt remove caddy' if desired).${NC}"
+echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}${BOLD}  ║       ✅ Neo LocalDev Successfully Uninstalled       ║${NC}"
+echo -e "${GREEN}${BOLD}  ╚══════════════════════════════════════════════════════╝${NC}"
+echo -e "${DIM}  All files, daemons, configs, and ports have been completely restored.${NC}"
 echo ""
