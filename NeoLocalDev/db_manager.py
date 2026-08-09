@@ -15,6 +15,9 @@ def run_mysql_cmd(query):
         logger.error(f"MySQL query error: {e.output}")
         return {"ok": False, "error": e.output}
 
+def is_db_installed():
+    return bool(shutil.which("mariadb") or shutil.which("mysql") or shutil.which("mysqld"))
+
 def is_db_running():
     for conn in psutil.net_connections(kind="tcp"):
         if conn.status == "LISTEN" and conn.laddr.port == 3306:
@@ -24,6 +27,9 @@ def is_db_running():
 def control_service(action):
     """Controls MariaDB service using systemctl."""
     # Action can be: start, stop, restart
+    if not is_db_installed():
+        logger.warning("MariaDB is not installed on this system.")
+        return {"ok": False, "error": "MariaDB is not installed"}
     try:
         subprocess.check_call(["sudo", "systemctl", action, "mariadb"])
         return {"ok": True}

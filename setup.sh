@@ -16,14 +16,44 @@ fi
 
 # Detect actual non-root user calling sudo
 ACTUAL_USER="${SUDO_USER:-$(whoami)}"
+USER_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6 || echo "")
+if [ -z "$USER_HOME" ]; then
+    USER_HOME="$HOME"
+fi
 
-# 1. Install python dependencies via apt (failsafe and avoids pip3 PATH issues under sudo)
-echo -e "${CYAN}[1/4]${NC} Installing system Python dependencies..."
+# 1. Install system and python dependencies via apt
+echo -e "${CYAN}[1/5]${NC} Installing system dependencies..."
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3-psutil python3-yaml
+sudo apt-get install -y -qq python3-psutil python3-yaml curl debian-keyring debian-archive-keyring apt-transport-https libnss3-tools
 
-# 2. Install mkcert if not present
-echo -e "${CYAN}[2/4]${NC} Checking mkcert..."
+# 2. Install Caddy (Core Reverse Proxy Gateway)
+echo -e "${CYAN}[2/5]${NC} Checking Caddy..."
+if ! command -v caddy &>/dev/null; then
+    echo -e "   Installing Caddy web server..."
+    gpg_key="/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+    if [ ! -f "$gpg_key" ]; then
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o "$gpg_key"
+    fi
+    apt_list="/etc/apt/sources.list.d/caddy-stable.list"
+    if [ ! -f "$apt_list" ]; then
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee "$apt_list" >/dev/null
+    fi
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq caddy
+    echo -e "   ${GREEN}✓${NC} Caddy installed successfully"
+else
+    echo -e "   ${GREEN}✓${NC} Caddy already installed"
+fi
+
+# Disable default systemd caddy service so neold can manage instances on ports 80/443 without conflict
+sudo systemctl disable --now caddy 2>/dev/null || true
+CADDY_BIN=$(command -v caddy || echo "/usr/bin/caddy")
+if [ -f "$CADDY_BIN" ]; then
+    sudo setcap cap_net_bind_service=+ep "$CADDY_BIN" 2>/dev/null || true
+fi
+
+# 3. Install mkcert if not present
+echo -e "${CYAN}[3/5]${NC} Checking mkcert..."
 if ! command -v mkcert &>/dev/null; then
     echo -e "   Downloading and installing mkcert..."
     curl -sJLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64"
@@ -34,23 +64,22 @@ else
     echo -e "   ${GREEN}✓${NC} mkcert already installed"
 fi
 
-# Trust CA as the actual user (not root) so Chrome/Firefox NSS stores are updated correctly
+# Trust CA as the actual user so stores are updated correctly
 echo -e "   Trusting local CA in system and browser stores (as $ACTUAL_USER)..."
-USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
-sudo -u "$ACTUAL_USER" HOME="$USER_HOME" /usr/local/bin/mkcert -install
+sudo -u "$ACTUAL_USER" HOME="$USER_HOME" /usr/local/bin/mkcert -install 2>/dev/null || /usr/local/bin/mkcert -install
 echo -e "   ${GREEN}✓${NC} CA trust installed for $ACTUAL_USER"
 
-# 3. Install neold globally
-echo -e "${CYAN}[3/4]${NC} Installing neold command globally..."
+# 4. Install neold globally
+echo -e "${CYAN}[4/5]${NC} Installing neold command globally..."
 sudo cp "${PROJECT_DIR}/neold" /usr/local/bin/neold
 sudo sed -i "s|# Find NeoLocalDev package directory|export PYTHONPATH=\"${PROJECT_DIR}:\${PYTHONPATH:-}\"\n# Find NeoLocalDev package directory|g" /usr/local/bin/neold
 sudo chmod +x /usr/local/bin/neold
 sudo rm -f /usr/local/bin/devctl
-echo -e "   ${GREEN}✓${NC} neold installed to /usr/local/bin/neold (removed old devctl with dynamic path)"
+echo -e "   ${GREEN}✓${NC} neold installed to /usr/local/bin/neold"
 
-# Configure MariaDB root user to allow passwordless local connections for development
+# Configure MariaDB root user to allow passwordless local connections for development if installed
 if command -v mysql &>/dev/null; then
-    echo -e "   Configuring MariaDB root user..."
+    echo -e "   Configuring MariaDB root user for dev access..."
     sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;" 2>/dev/null || true
 fi
 
@@ -63,8 +92,8 @@ $ACTUAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/phpenmod, /usr/sbin/phpdismod, /usr/b
 EOF"
 sudo chmod 0440 "$SUDOERS_FILE"
 
-# 4. Initial configuration as the actual user
-echo -e "${CYAN}[4/4]${NC} Running initial configuration..."
+# 5. Initial configuration as the actual user
+echo -e "${CYAN}[5/5]${NC} Running initial configuration..."
 sudo -u "$ACTUAL_USER" HOME="$USER_HOME" python3 -m NeoLocalDev.cli setup
 echo -e "   ${GREEN}✓${NC} Configuration ready"
 
@@ -79,13 +108,15 @@ else
 fi
 
 echo ""
-echo -e "${BLUE}${BOLD}  ╔══════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}${BOLD}  ║     Neo LocalDev helper — Ready!         ║${NC}"
-echo -e "${BLUE}${BOLD}  ╚══════════════════════════════════════════╝${NC}"
+echo -e "${BLUE}${BOLD}  ╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}${BOLD}  ║         Neo LocalDev helper — Ready!                 ║${NC}"
+echo -e "${BLUE}${BOLD}  ╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${BOLD}Run:${NC}       ${CYAN}neold start${NC}  (Starts Gateway + API + Watcher)"
-echo -e "  ${BOLD}Status:${NC}    ${CYAN}neold status${NC}"
-echo -e "  ${BOLD}Dashboard:${NC} ${CYAN}https://dev.local/admin/${NC}"
+echo -e "  ${BOLD}Start Service:${NC}     ${CYAN}neold start${NC}  (Starts Gateway + API + Watcher)"
+echo -e "  ${BOLD}Check Status:${NC}      ${CYAN}neold status${NC}"
+echo -e "  ${BOLD}Dashboard (HTTPS):${NC} ${CYAN}https://${DOMAIN}/admin/${NC}"
+echo -e "  ${BOLD}Direct API (HTTP):${NC} ${CYAN}http://127.0.0.1:9199/admin/${NC}"
 echo ""
-echo -e "  ${DIM}Open the dashboard to install/start Caddy, MariaDB, and phpMyAdmin.${NC}"
+echo -e "  ${DIM}CLI Test Command:  curl http://127.0.0.1:9199/api/status${NC}"
+echo -e "  ${DIM}Open dashboard to install optional components (MariaDB, PHP, phpMyAdmin).${NC}"
 echo ""

@@ -81,7 +81,7 @@ def install_caddy():
             
         subprocess.check_call(["sudo", "apt-get", "update", "-qq"])
         subprocess.check_call(["sudo", "apt-get", "install", "-y", "-qq", "caddy"])
-        subprocess.check_call(["sudo", "systemctl", "disable", "caddy"])
+        subprocess.check_call(["sudo", "systemctl", "disable", "--now", "caddy"])
         # Grant low-port capability
         caddy_bin = shutil.which("caddy") or "/usr/bin/caddy"
         subprocess.check_call(["sudo", "setcap", "cap_net_bind_service=+ep", caddy_bin])
@@ -97,6 +97,8 @@ def install_mariadb():
         subprocess.check_call(["sudo", "apt-get", "install", "-y", "-qq", "mariadb-server"])
         subprocess.check_call(["sudo", "systemctl", "enable", "mariadb"])
         subprocess.check_call(["sudo", "systemctl", "start", "mariadb"])
+        # Configure root user for passwordless dev access
+        subprocess.run(["sudo", "mysql", "-e", "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;"], check=False)
         return True
     except Exception as e:
         logger.error(f"Failed to install MariaDB: {e}")

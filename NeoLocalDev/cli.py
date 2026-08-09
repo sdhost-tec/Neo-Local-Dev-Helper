@@ -75,7 +75,12 @@ def _start_api_server():
     return proc
 
 def _start_caddy(cfg, caddyfile_path):
-    caddy_bin = shutil.which("caddy") or cfg.get("caddy_path", "caddy")
+    caddy_bin = shutil.which("caddy") or cfg.get("caddy_path", "/usr/bin/caddy")
+    if not shutil.which("caddy") and not Path(caddy_bin).exists():
+        logger.error(f"❌ Caddy binary not found at '{caddy_bin}' or in PATH.")
+        logger.error("   Please run ./setup.sh to install Caddy, or install it with: sudo apt-get install caddy")
+        return None
+
     log_dir = cfg.get("log_dir", str(Path.home() / ".NeoLocalDev" / "logs"))
     caddy_log = Path(log_dir) / "caddy.log"
     caddy_log.parent.mkdir(parents=True, exist_ok=True)
@@ -107,17 +112,24 @@ def _start_caddy(cfg, caddyfile_path):
 
     # Full restart
     _stop_process("caddy")
-    proc = subprocess.Popen(
-        [caddy_bin, "run", "--config", caddyfile_path],
-        stdout=open(caddy_log, "a"),
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    get_pid_file("caddy").write_text(str(proc.pid))
-    logger.info(f"Caddy started (PID: {proc.pid})")
-    time.sleep(1)
-    return proc
+    try:
+        proc = subprocess.Popen(
+            [caddy_bin, "run", "--config", caddyfile_path],
+            stdout=open(caddy_log, "a"),
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        get_pid_file("caddy").write_text(str(proc.pid))
+        logger.info(f"Caddy started (PID: {proc.pid})")
+        time.sleep(1)
+        return proc
+    except FileNotFoundError:
+        logger.error(f"❌ Caddy binary not found at '{caddy_bin}'. Please run setup.sh to install Caddy.")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Failed to start Caddy: {e}")
+        return None
 
 def _reload_proxy(projects=None):
     cfg = cfgmod.load_config()
@@ -170,7 +182,8 @@ def cmd_setup(args):
         pass
 
     logger.info("Setup complete!")
-    logger.info(f"Dashboard will be available at: https://{domain}/admin/")
+    logger.info(f"Dashboard (HTTPS): https://{domain}/admin/")
+    logger.info("Direct API (HTTP):  http://127.0.0.1:9199/admin/")
 
 def cmd_start(args):
     # Warn immediately if running as root — causes permission issues on stop and cert trust
@@ -190,10 +203,13 @@ def cmd_start(args):
         projects=projects,
     )
 
-    # Start MariaDB if stopped and installed
-    if not dbmod.is_db_running():
-        logger.info("Starting MariaDB database service...")
-        dbmod.control_service("start")
+    # Start MariaDB if installed and stopped
+    if dbmod.is_db_installed():
+        if not dbmod.is_db_running():
+            logger.info("Starting MariaDB database service...")
+            dbmod.control_service("start")
+    else:
+        logger.debug("MariaDB is not installed, skipping startup.")
 
     # Only restart Caddy if not already running
     if not _is_running("caddy"):
@@ -207,7 +223,8 @@ def cmd_start(args):
     else:
         logger.info("API server is already running, skipping restart.")
 
-    logger.info(f"Dashboard: https://{domain}/admin/")
+    logger.info(f"Dashboard (HTTPS): https://{domain}/admin/")
+    logger.info("Direct API (HTTP):  http://127.0.0.1:9199/admin/")
     
     # Expose phpMyAdmin link if installed
     pma_dir = Path.home() / ".NeoLocalDev" / "phpmyadmin"

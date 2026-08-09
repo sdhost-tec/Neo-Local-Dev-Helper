@@ -32,7 +32,7 @@ elif command -v devctl &>/dev/null; then
 fi
 
 # Wait a moment for graceful shutdown
-sleep 2
+sleep 1
 
 # Force-kill ALL NeoLocalDev-related processes (handles orphaned/stale processes, including root-owned)
 echo -e "  ${DIM}  Killing any remaining NeoLocalDev processes...${NC}"
@@ -47,6 +47,7 @@ sudo pkill -9 -f "caddy run"               2>/dev/null || true
 sudo fuser -k 9199/tcp 2>/dev/null || true
 sudo fuser -k 2019/tcp 2>/dev/null || true
 sudo fuser -k 443/tcp  2>/dev/null || true
+sudo fuser -k 80/tcp   2>/dev/null || true
 
 sleep 1
 echo -e "  ${GREEN}✓${NC} All processes stopped and ports released"
@@ -55,7 +56,7 @@ echo -e "  ${GREEN}✓${NC} All processes stopped and ports released"
 # 2. Remove systemd service
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[2/9]${NC} Removing systemd service..."
-for svc in /etc/systemd/system/neo-localdev@*.service; do
+for svc in /etc/systemd/system/neo-localdev@*.service /etc/systemd/system/neo-localdev.service; do
     if [ -f "$svc" ]; then
         sudo systemctl stop "$(basename "$svc")" 2>/dev/null || true
         sudo systemctl disable "$(basename "$svc")" 2>/dev/null || true
@@ -77,8 +78,12 @@ echo -e "  ${GREEN}✓${NC} Removed binaries"
 # 4. Remove domains from /etc/hosts (BEFORE deleting config)
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[4/9]${NC} Removing domains from /etc/hosts..."
-ACTUAL_USER="${SUDO_USER:-$USER}"
-USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+ACTUAL_USER="${SUDO_USER:-$(whoami)}"
+USER_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6 || echo "")
+if [ -z "$USER_HOME" ]; then
+    USER_HOME="$HOME"
+fi
+
 CONFIG_DIR="${USER_HOME}/.NeoLocalDev"
 CONFIG_FILE="${CONFIG_DIR}/config.yml"
 MAIN_DOMAIN=$(grep '^domain:' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "")
@@ -107,7 +112,7 @@ fi
 echo -e "${CYAN}[6/9]${NC} Removing installed runtimes..."
 RUNTIMES_DIR="${USER_HOME}/.NeoLocalDev/runtimes"
 if [ -d "$RUNTIMES_DIR" ]; then
-    rm -rf "$RUNTIMES_DIR"
+    sudo rm -rf "$RUNTIMES_DIR"
 fi
 # Remove node version symlinks
 sudo rm -f /usr/local/bin/node[0-9]* /usr/local/bin/npm[0-9]* /usr/local/bin/npx[0-9]* 2>/dev/null || true
@@ -123,8 +128,6 @@ echo -e "  ${GREEN}✓${NC} Removed ~/neo-certs"
 # 8. Remove CA from system trust store and mkcert CA files
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[8/9]${NC} Removing CA from system trust store..."
-ACTUAL_USER="${SUDO_USER:-$USER}"
-USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 
 # Remove from NSS DB (Chrome/Firefox) — mkcert stores it under the hostname as nickname
 if command -v certutil &>/dev/null; then
@@ -146,8 +149,10 @@ fi
 if command -v mkcert &>/dev/null; then
     sudo -u "$ACTUAL_USER" HOME="$USER_HOME" mkcert -uninstall 2>/dev/null || true
     # Remove the mkcert CA directory entirely so reinstall gets a fresh CA
-    rm -rf "${USER_HOME}/.local/share/mkcert" 2>/dev/null || true
-    rm -rf "${USER_HOME}/.config/mkcert" 2>/dev/null || true
+    if [ -n "$USER_HOME" ] && [ "$USER_HOME" != "/" ]; then
+        rm -rf "${USER_HOME}/.local/share/mkcert" 2>/dev/null || true
+        rm -rf "${USER_HOME}/.config/mkcert" 2>/dev/null || true
+    fi
 fi
 
 # Debian/Ubuntu system store
