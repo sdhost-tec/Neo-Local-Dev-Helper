@@ -140,14 +140,14 @@ function startPolling() {
       const res = await fetch('/guardian/check');
       const data = await res.json();
       if (data.ok && data.approved) {
-        if (fromUrl) {
-          window.location.href = fromUrl;
-        } else {
-          window.location.reload();
+        let target = fromUrl;
+        if (!target || target.includes('/guardian/')) {
+          target = window.location.origin + '/admin/';
         }
+        window.location.href = target;
       }
     } catch (e) {}
-  }, 2000);
+  }, 1200);
 }
 
 // Start polling immediately in case it was already approved in the background
@@ -248,19 +248,19 @@ p {
 <div class="card">
   <div class="shield">🛡️</div>
   <h1>Device Approved!</h1>
-  <p>Your device is fully approved to access this local environment. Redirecting you back to your application...</p>
+  <p>Your device is fully approved to access this local environment. Redirecting you to your destination...</p>
   <div class="ip-box">IP: {client_ip}</div>
-  <a href="https://dev.local/admin/" class="btn">Go to Dashboard</a>
+  <a id="dashBtn" href="/admin/" class="btn">Go to Dashboard</a>
 </div>
 
 <script>
 const urlParams = new URLSearchParams(window.location.search);
-const fromUrl = urlParams.get('from');
-if (fromUrl) {
-  setTimeout(() => {
-    window.location.href = fromUrl;
-  }, 1000);
+let target = urlParams.get('from');
+if (!target || target.includes('/guardian/')) {
+  target = window.location.origin + '/admin/';
 }
+document.getElementById('dashBtn').href = target;
+window.location.href = target;
 </script>
 </body>
 </html>"""

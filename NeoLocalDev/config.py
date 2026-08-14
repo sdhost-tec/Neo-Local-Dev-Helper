@@ -3,7 +3,7 @@ import yaml
 from pathlib import Path
 
 DEFAULT_CONFIG = {
-    "domain": "dev.local",
+    "domain": "dev.lo.com",
     "auto_detect": True,
     "watcher_interval": 3,
     "caddy_path": "/usr/bin/caddy",

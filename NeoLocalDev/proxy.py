@@ -16,6 +16,39 @@ def _get_lan_ip():
     except Exception:
         return None
 
+def _get_fastcgi_backend():
+    import os
+    import glob
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        res = s.connect_ex(("127.0.0.1", 9000))
+        s.close()
+        if res == 0:
+            return "127.0.0.1:9000"
+    except Exception:
+        pass
+
+    socks = glob.glob("/run/php/*.sock") + glob.glob("/var/run/php/*.sock")
+    for sock in sorted(set(socks)):
+        if os.path.islink(sock) and not os.path.exists(sock):
+            continue
+        try:
+            us = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            us.settimeout(0.5)
+            c_res = us.connect_ex(sock)
+            us.close()
+            if c_res == 0:
+                return f"unix/{sock}"
+        except Exception:
+            pass
+
+    for sock in sorted(set(socks)):
+        if os.path.exists(sock):
+            return f"unix/{sock}"
+
+    return "127.0.0.1:9000"
+
 def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=None):
     from .config import load_config
     cfg = load_config()
@@ -27,6 +60,7 @@ def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=N
     lan_ip = _get_lan_ip()
     api_port = 9199
     pma_dir = get_pma_dir()
+    fastcgi_target = _get_fastcgi_backend()
     
     # phpMyAdmin block if installed
     pma_block = ""
@@ -35,7 +69,7 @@ def generate_caddyfile(domain, ssl_cert, ssl_key, caddy_dir, log_dir, projects=N
     handle_path /pma* {{
         root * {pma_dir}
         file_server
-        php_fastcgi 127.0.0.1:9000
+        php_fastcgi {fastcgi_target}
     }}
 """
 

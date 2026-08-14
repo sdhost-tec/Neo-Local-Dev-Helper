@@ -665,3 +665,107 @@ input:checked + .slider:before { transform: translateX(20px); background: #fff; 
   .metrics-row { grid-template-columns: 1fr; }
   .page-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
 }
+
+/* ── Installation Progress Modal ── */
+.install-modal-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(4, 5, 14, 0.85);
+  backdrop-filter: blur(12px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.install-modal-card {
+  width: 100%;
+  max-width: 680px;
+  background: rgba(13, 17, 34, 0.95);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 20px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 30px rgba(99, 102, 241, 0.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.install-modal-header {
+  padding: 1.25rem 1.5rem;
+  background: rgba(8, 10, 22, 0.6);
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.install-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+.install-progress-bar-wrap {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  position: relative;
+}
+
+.install-progress-bar-fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  transition: width 0.3s ease;
+}
+
+.install-progress-bar-indeterminate {
+  width: 40%;
+  height: 100%;
+  background: var(--accent-gradient);
+  position: absolute;
+  animation: indeterminateBar 1.5s infinite linear;
+}
+
+@keyframes indeterminateBar {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+
+.install-terminal-box {
+  background: #020308;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: #a7f3d0;
+  padding: 1.25rem;
+  height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.install-terminal-line {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.install-terminal-line.error { color: #f43f5e; }
+.install-terminal-line.warning { color: #f59e0b; }
+.install-terminal-line.success { color: #10b981; font-weight: 600; }
+.install-terminal-line.info { color: #38bdf8; }
+
+.install-modal-footer {
+  padding: 1rem 1.5rem;
+  background: rgba(8, 10, 22, 0.6);
+  border-top: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}

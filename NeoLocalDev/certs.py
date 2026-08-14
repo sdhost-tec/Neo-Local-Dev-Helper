@@ -33,11 +33,10 @@ def trust_system_and_browsers():
         mkcert = ensure_mkcert()
         logger.info("Installing mkcert CA to system and browser trust stores...")
 
-        # Determine the actual non-root user so NSS stores (Chrome/Firefox) get updated correctly.
-        # When called via sudo, SUDO_USER points to the real user.
         actual_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
         env = os.environ.copy()
 
+        user_home = Path.home()
         if actual_user and actual_user != "root":
             import pwd
             try:
@@ -45,15 +44,46 @@ def trust_system_and_browsers():
                 env["HOME"] = pw.pw_dir
                 env["USER"] = actual_user
                 env["LOGNAME"] = actual_user
+                user_home = Path(pw.pw_dir)
             except KeyError:
                 pass
 
+        # 1. Ensure Chrome NSS DB exists at ~/.pki/nssdb
+        nssdb_dir = user_home / ".pki" / "nssdb"
+        if not nssdb_dir.exists():
+            try:
+                nssdb_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["certutil", "-d", f"sql:{nssdb_dir}", "-N", "--empty-password"], capture_output=True, env=env)
+            except Exception as ex:
+                logger.warning(f"Could not initialize Chrome nssdb: {ex}")
+
+        # 2. Run mkcert -install
         result = subprocess.run(
             [mkcert, "-install"],
             capture_output=True, text=True, check=True,
             env=env
         )
         logger.info(result.stdout.strip())
+
+        # 3. Explicitly import rootCA into Chrome NSS DB
+        caroot = get_caroot()
+        if caroot:
+            rootca_pem = Path(caroot) / "rootCA.pem"
+            if rootca_pem.exists() and nssdb_dir.exists():
+                subprocess.run(
+                    ["certutil", "-d", f"sql:{nssdb_dir}", "-A", "-t", "C,,", "-n", "mkcert development CA", "-i", str(rootca_pem)],
+                    capture_output=True, env=env
+                )
+                # Also install to system CA store if possible
+                try:
+                    sys_ca_dir = Path("/usr/local/share/ca-certificates")
+                    if sys_ca_dir.exists():
+                        dest_crt = sys_ca_dir / "mkcert-rootCA.crt"
+                        subprocess.run(["sudo", "-n", "cp", str(rootca_pem), str(dest_crt)], capture_output=True)
+                        subprocess.run(["sudo", "-n", "update-ca-certificates"], capture_output=True)
+                except Exception:
+                    pass
+
         # Export rootCA.pem to project root automatically
         project_root = Path(__file__).resolve().parent.parent
         export_rootca_to_project(str(project_root))

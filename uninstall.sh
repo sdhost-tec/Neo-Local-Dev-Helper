@@ -12,11 +12,14 @@ echo -e "${RED}${BOLD}  ╚═════════════════�
 echo -e "${DIM}  This will remove all configurations, certificates, binaries, and services.${NC}"
 echo ""
 
-read -r -p "  Are you sure you want to uninstall? [y/N]: " CONFIRM
-CONFIRM=$(echo "$CONFIRM" | tr '[:upper:]' '[:lower:]')
-if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "yes" ]; then
-    echo -e "\n  ${YELLOW}Uninstallation aborted.${NC}\n"
-    exit 0
+# Skip prompt if -y or --yes flag passed
+if [ "${1:-}" != "-y" ] && [ "${1:-}" != "--yes" ]; then
+    read -r -p "  Are you sure you want to uninstall? [y/N]: " CONFIRM
+    CONFIRM=$(echo "$CONFIRM" | tr '[:upper:]' '[:lower:]')
+    if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "yes" ]; then
+        echo -e "\n  ${YELLOW}Uninstallation aborted.${NC}\n"
+        exit 0
+    fi
 fi
 
 echo ""
@@ -30,24 +33,30 @@ fi
 CONFIG_DIR="${USER_HOME}/.NeoLocalDev"
 CONFIG_FILE="${CONFIG_DIR}/config.yml"
 
+# Fix/Remove invalid sudoers file immediately to avoid sudo syntax error spam
+sudo rm -f /etc/sudoers.d/neold 2>/dev/null || true
+
 # ─────────────────────────────────────────────────────────────
 # 1. Stop all background processes & services
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[1/5]${NC} Stopping active processes and services..."
 
-# Graceful stop via CLI if available
-if command -v neold &>/dev/null; then
-    neold stop &>/dev/null || true
-elif command -v devctl &>/dev/null; then
-    devctl stop &>/dev/null || true
-fi
+# Stop systemd units if present
+sudo systemctl stop neold.service 2>/dev/null || true
+sudo systemctl disable neold.service 2>/dev/null || true
+for svc in /etc/systemd/system/neo-localdev@*.service /etc/systemd/system/neo-localdev.service; do
+    if [ -f "$svc" ]; then
+        sudo systemctl stop "$(basename "$svc")" &>/dev/null || true
+        sudo systemctl disable "$(basename "$svc")" &>/dev/null || true
+    fi
+done
 
-# Terminate specific NeoLocalDev daemons safely (avoid broad pattern matching that could hit the shell)
+# Terminate specific NeoLocalDev daemons safely
 pkill -9 -f "NeoLocalDev\.api_server" 2>/dev/null || true
 pkill -9 -f "NeoLocalDev\.watcher_daemon" 2>/dev/null || true
 pkill -9 -f "caddy run.*NeoLocalDev" 2>/dev/null || true
 
-# Release allocated ports with timeout to prevent terminal hang
+# Release allocated ports with timeout
 if command -v fuser &>/dev/null; then
     timeout 2 sudo fuser -k 9199/tcp 2>/dev/null || true
     timeout 2 sudo fuser -k 2019/tcp 2>/dev/null || true
@@ -62,13 +71,7 @@ echo -e "   ${GREEN}✓${NC} All background services stopped and ports released"
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[2/5]${NC} Cleaning systemd services and global commands..."
 
-for svc in /etc/systemd/system/neo-localdev@*.service /etc/systemd/system/neo-localdev.service; do
-    if [ -f "$svc" ]; then
-        sudo systemctl stop "$(basename "$svc")" &>/dev/null || true
-        sudo systemctl disable "$(basename "$svc")" &>/dev/null || true
-        sudo rm -f "$svc"
-    fi
-done
+sudo rm -f /etc/systemd/system/neold.service /etc/systemd/system/neo-localdev.service
 sudo systemctl daemon-reload &>/dev/null || true
 
 sudo rm -f /usr/local/bin/neold /usr/local/bin/devctl
@@ -87,11 +90,11 @@ if [ -f "$CONFIG_FILE" ]; then
         sudo sed -i "/ ${MAIN_DOMAIN}$/d" /etc/hosts 2>/dev/null || true
     fi
 fi
-# Remove dev.local / custom .local domain entries
+# Remove dev.local / dev.lo.com entries
+sudo sed -i '/127\.0\.0\.1.*dev\.lo\.com/d' /etc/hosts 2>/dev/null || true
 sudo sed -i '/127\.0\.0\.1.*\.local$/d' /etc/hosts 2>/dev/null || true
 sudo sed -i '/dev\.local/d' /etc/hosts 2>/dev/null || true
 
-# Remove sudoers file
 sudo rm -f /etc/sudoers.d/neold
 
 echo -e "   ${GREEN}✓${NC} Hosts mappings and sudoers policy cleaned"
@@ -113,9 +116,8 @@ echo -e "   ${GREEN}✓${NC} Data directory ~/.NeoLocalDev removed"
 # ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[5/5]${NC} Cleaning SSL certificates and trust stores..."
 
-# Uninstall mkcert CA with timeout to prevent hanging on headless servers
 if command -v mkcert &>/dev/null; then
-    timeout 3 sudo -u "$ACTUAL_USER" HOME="$USER_HOME" mkcert -uninstall &>/dev/null || timeout 3 mkcert -uninstall &>/dev/null || true
+    timeout 2 sudo -u "$ACTUAL_USER" HOME="$USER_HOME" mkcert -uninstall &>/dev/null || true
     if [ -n "$USER_HOME" ] && [ "$USER_HOME" != "/" ]; then
         rm -rf "${USER_HOME}/.local/share/mkcert" 2>/dev/null || true
         rm -rf "${USER_HOME}/.config/mkcert" 2>/dev/null || true

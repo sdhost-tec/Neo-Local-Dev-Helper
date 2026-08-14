@@ -31,6 +31,76 @@ ACTIVE_SESSIONS = set()
 PENDING_GUARDIAN_REQUESTS = set()
 PROCESS_CACHE = {}
 
+class InstallJobTracker:
+    def __init__(self):
+        self.jobs = {}
+        self.lock = threading.Lock()
+
+    def start_job(self, component, install_fn, password=None, reload_cb=None):
+        with self.lock:
+            for jid, jdata in list(self.jobs.items()):
+                if jdata["component"] == component and jdata["status"] == "running":
+                    return jid, False
+
+            job_id = f"job_{component}_{int(time.time())}"
+            self.jobs[job_id] = {
+                "id": job_id,
+                "component": component,
+                "status": "running",
+                "logs": [f"🚀 Initializing installation process for '{component}'..."],
+                "error": None,
+                "created_at": time.time()
+            }
+
+        def _worker():
+            def log_cb(msg):
+                with self.lock:
+                    if job_id in self.jobs:
+                        self.jobs[job_id]["logs"].append(msg)
+
+            try:
+                res = install_fn(log_cb=log_cb, password=password)
+                if isinstance(res, tuple):
+                    ok, msg_or_err = res
+                else:
+                    ok = bool(res)
+                    msg_or_err = "Installation completed" if ok else "Installation failed"
+
+                with self.lock:
+                    if ok:
+                        self.jobs[job_id]["status"] = "success"
+                        self.jobs[job_id]["logs"].append(f"🎉 Component '{component}' installed successfully!")
+                        if component == "caddy":
+                            certsmod.trust_system_and_browsers()
+                    else:
+                        if msg_or_err == "sudo_required":
+                            self.jobs[job_id]["status"] = "sudo_required"
+                            self.jobs[job_id]["error"] = "sudo_required"
+                            self.jobs[job_id]["logs"].append("🔑 System password required for sudo.")
+                        else:
+                            self.jobs[job_id]["status"] = "failed"
+                            self.jobs[job_id]["error"] = msg_or_err
+                            self.jobs[job_id]["logs"].append(f"❌ Installation failed: {msg_or_err}")
+
+                if ok and reload_cb:
+                    reload_cb()
+
+            except Exception as e:
+                with self.lock:
+                    self.jobs[job_id]["status"] = "failed"
+                    self.jobs[job_id]["error"] = str(e)
+                    self.jobs[job_id]["logs"].append(f"❌ Exception: {e}")
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return job_id, True
+
+    def get_job(self, job_id):
+        with self.lock:
+            return dict(self.jobs.get(job_id, {}))
+
+install_tracker = InstallJobTracker()
+
 def load_sessions():
     global ACTIVE_SESSIONS
     sess_file = Path(cfgmod.get_config_dir()) / "sessions.json"
@@ -576,8 +646,12 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             cfg = cfgmod.load_config()
             allowed = cfg.get("allowed_ips", ["127.0.0.1", "::1"])
             if client_ip in allowed:
-                html = GUARDIAN_APPROVED_HTML.replace("{client_ip}", client_ip)
-                self._send_html(html)
+                query = self._parse_query()
+                target = query.get("from") or "/admin/"
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
                 return
             html = GUARDIAN_UNAUTHORIZED_HTML.replace("{client_ip}", client_ip)
             self._send_html(html)
@@ -804,6 +878,18 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 lines = ["No log output captured yet."]
             self._send_json({"ok": True, "lines": lines})
 
+        elif path == "/api/service/install/progress":
+            qs = self._parse_query()
+            job_id = qs.get("job_id")
+            if not job_id:
+                self._send_json({"ok": False, "error": "job_id query parameter is required"}, 400)
+                return
+            job = install_tracker.get_job(job_id)
+            if not job:
+                self._send_json({"ok": False, "error": f"Job '{job_id}' not found"}, 404)
+                return
+            self._send_json({"ok": True, "job": job})
+
         elif path == "/" or path == "":
             # Serve Vue dashboard from static/index.html
             static_index = Path(__file__).resolve().parent / "static" / "index.html"
@@ -1026,7 +1112,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             body = self._read_body()
             service = body.get("service")
             action = body.get("action")
-            if service not in ["caddy", "mariadb"]:
+            if service not in ["caddy", "mariadb", "php", "php_fpm"]:
                 self._send_json({"ok": False, "error": "Unsupported service"}, 400)
                 return
             if action not in ["start", "stop", "restart", "reload"]:
@@ -1039,6 +1125,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                     ok = True
                 else:
                     ok = self._control_caddy(action)
+            elif service in ["php", "php_fpm"]:
+                ok = self._control_php_fpm(action)
             else:
                 res = dbmod.control_service(action)
                 ok = res["ok"]
@@ -1051,8 +1139,9 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         elif path == "/api/service/install":
             body = self._read_body()
             component = body.get("component")
+            password = body.get("sudo_password")
+            version = body.get("version")
             
-            # Map dashboard IDs to installer components
             mapping = {
                 "pma": "phpmyadmin",
                 "php": "php_fpm",
@@ -1061,26 +1150,32 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             }
             mapped_comp = mapping.get(component, component)
             
-            funcs = {
-                "caddy": instmod.install_caddy,
-                "mariadb": instmod.install_mariadb,
-                "php_fpm": instmod.install_php_fpm,
-                "phpmyadmin": instmod.install_phpmyadmin
-            }
-            if mapped_comp not in funcs:
+            if mapped_comp == "php_fpm":
+                install_fn = lambda log_cb=None, password=None: instmod.install_php_fpm(log_cb=log_cb, password=password, version=version)
+            elif mapped_comp == "caddy":
+                install_fn = instmod.install_caddy
+            elif mapped_comp == "mariadb":
+                install_fn = instmod.install_mariadb
+            elif mapped_comp == "phpmyadmin":
+                install_fn = instmod.install_phpmyadmin
+            else:
                 self._send_json({"ok": False, "error": f"Invalid component: {component}"}, 400)
                 return
             
-            ok = funcs[mapped_comp]()
+            job_id, started = install_tracker.start_job(mapped_comp, install_fn, password=password, reload_cb=self._trigger_reload)
+            self._send_json({
+                "ok": True,
+                "job_id": job_id,
+                "started": started,
+                "message": f"Installation of component '{component}' initiated."
+            })
 
+        elif path == "/api/ssl/trust":
+            ok = certsmod.trust_system_and_browsers()
             if ok:
-                # Install trust if caddy installed
-                if component == "caddy":
-                    certsmod.trust_system_and_browsers()
-                self._trigger_reload()
-                self._send_json({"ok": True, "message": f"Component '{component}' installed successfully."})
+                self._send_json({"ok": True, "message": "SSL Certificate successfully registered and trusted in system and browsers."})
             else:
-                self._send_json({"ok": False, "error": f"Failed to install component '{component}'."})
+                self._send_json({"ok": False, "error": "Failed to update SSL Certificate trust."})
 
         elif path == "/api/db/create":
             body = self._read_body()
@@ -1305,10 +1400,37 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         return False
 
     def _php_fpm_running(self):
-        for conn in psutil.net_connections(kind="tcp"):
-            if conn.status == "LISTEN" and conn.laddr.port == 9000:
-                return True
+        import glob
+        for p in psutil.process_iter(['name']):
+            try:
+                name = p.info['name'] or ""
+                if "php-fpm" in name:
+                    return True
+            except Exception:
+                pass
+        if glob.glob("/run/php/*.sock"):
+            return True
+        try:
+            for conn in psutil.net_connections(kind="tcp"):
+                if conn.status == "LISTEN" and conn.laddr.port == 9000:
+                    return True
+        except Exception:
+            pass
         return False
+
+    def _control_php_fpm(self, action):
+        import glob
+        units = glob.glob("/lib/systemd/system/php*-fpm.service") + glob.glob("/etc/systemd/system/php*-fpm.service")
+        svc_names = set([os.path.basename(u).replace(".service", "") for u in units])
+        if not svc_names:
+            svc_names = {"php8.5-fpm", "php8.4-fpm", "php8.3-fpm", "php8.2-fpm", "php8.1-fpm", "php-fpm"}
+
+        success = False
+        for svc in svc_names:
+            res = subprocess.run(["sudo", "-n", "systemctl", action, svc], capture_output=True, text=True)
+            if res.returncode == 0:
+                success = True
+        return success
 
     def _control_caddy(self, action):
         cfg = cfgmod.load_config()

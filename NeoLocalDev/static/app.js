@@ -1076,8 +1076,22 @@ const ServicesTab = {
             <span :class="['badge', svcInfo(svc.id)?.running ? 'badge-ok' : (svcInfo(svc.id)?.installed ? 'badge-err' : 'badge-warn')]">
               {{ svcInfo(svc.id)?.running ? 'Running' : (svcInfo(svc.id)?.installed ? 'Stopped' : 'Not Installed') }}
             </span>
-            <div style="display:flex;gap:0.35rem">
-              <template v-if="!svcInfo(svc.id)?.installed">
+            <div style="display:flex;gap:0.35rem;align-items:center">
+              <template v-if="svc.id === 'php'">
+                <select v-model="selectedPhpVersion" class="input-control" style="padding:0.35rem 0.5rem;font-size:0.8rem;max-width:110px">
+                  <option value="">Default PHP</option>
+                  <option value="8.4">PHP 8.4</option>
+                  <option value="8.3">PHP 8.3</option>
+                  <option value="8.2">PHP 8.2</option>
+                  <option value="8.1">PHP 8.1</option>
+                  <option value="8.0">PHP 8.0</option>
+                  <option value="7.4">PHP 7.4</option>
+                </select>
+                <button class="btn btn-primary btn-sm" @click="install('php', selectedPhpVersion)">
+                  {{ svcInfo('php')?.installed ? '📥 Add' : 'Install' }}
+                </button>
+              </template>
+              <template v-else-if="!svcInfo(svc.id)?.installed">
                 <button class="btn btn-primary btn-sm" @click="install(svc.id)">Install</button>
               </template>
               <template v-else-if="svc.id === 'pma'">
@@ -1129,7 +1143,7 @@ const ServicesTab = {
           <div style="font-size:2.5rem;margin-bottom:0.75rem">🔒</div>
           <div class="modal-title" style="justify-content:center">Admin Privileges Required</div>
           <p style="color:var(--muted);font-size:0.82rem;margin-bottom:1.25rem">
-            This action requires sudo to manage PHP extensions and restart PHP-FPM.
+            This action requires sudo privileges to perform system component operations.
           </p>
           <input v-model="sudoPwd" type="password" class="input-control"
             placeholder="Enter your sudo password…"
@@ -1138,6 +1152,71 @@ const ServicesTab = {
           <div style="display:flex;gap:0.5rem">
             <button class="btn btn-outline" style="flex:1" @click="sudoOpen=false">Cancel</button>
             <button class="btn btn-primary" style="flex:1;background:var(--red);border-color:var(--red)" @click="confirmSudo">Confirm</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Installation Progress Modal -->
+      <div v-if="installModalOpen" class="install-modal-backdrop" @click.self="forceCloseInstallModal">
+        <div class="install-modal-card">
+          <div class="install-modal-header">
+            <div class="install-modal-title">
+              <span v-if="installStatus === 'running'" style="animation:pulse-badge 1s infinite;display:inline-block">⚡</span>
+              <span v-else-if="installStatus === 'success'">🎉</span>
+              <span v-else-if="installStatus === 'failed'">❌</span>
+              <span v-else>🔒</span>
+              <span>Installing {{ installPhpVersion ? 'PHP ' + installPhpVersion : getComponentTitle(installComponent) }}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.75rem">
+              <span :class="['badge', installStatus === 'running' ? 'badge-warn' : (installStatus === 'sudo_required' ? 'badge-err' : (installStatus === 'success' ? 'badge-ok' : 'badge-err'))]">
+                {{ installStatus === 'running' ? 'In Progress...' : (installStatus === 'sudo_required' ? '🔒 Password Required' : (installStatus === 'success' ? 'Completed ✓' : 'Failed ✕')) }}
+              </span>
+              <button class="btn-ghost" style="font-size:1.25rem;color:var(--muted);padding:0 0.35rem;line-height:1;cursor:pointer" @click="forceCloseInstallModal" title="Close Modal">✕</button>
+            </div>
+          </div>
+
+          <div class="install-progress-bar-wrap">
+            <div v-if="installStatus === 'running'" class="install-progress-bar-indeterminate"></div>
+            <div v-else-if="installStatus === 'sudo_required'" class="install-progress-bar-fill" style="width:100%;background:var(--red)"></div>
+            <div v-else-if="installStatus === 'success'" class="install-progress-bar-fill" style="width:100%;background:var(--green)"></div>
+            <div v-else-if="installStatus === 'failed'" class="install-progress-bar-fill" style="width:100%;background:var(--red)"></div>
+          </div>
+
+          <div class="install-terminal-box" ref="terminalBoxRef">
+            <div v-for="(line, idx) in installLogs" :key="idx" :class="getLogClass(line)" class="install-terminal-line">
+              {{ line }}
+            </div>
+          </div>
+
+          <!-- Inline Sudo Password Input -->
+          <div v-if="installStatus === 'sudo_required'" style="background:rgba(244,63,94,0.08);border-top:1px solid rgba(244,63,94,0.2);padding:1rem 1.25rem">
+            <div style="font-weight:600;color:#fda4af;font-size:0.88rem;margin-bottom:0.4rem;display:flex;align-items:center;gap:0.5rem">
+              <span>🔒</span> Administrator Password Required
+            </div>
+            <div style="font-size:0.8rem;color:var(--muted);margin-bottom:0.75rem">
+              Elevated privileges (sudo) are required to install system packages and update permissions:
+            </div>
+            <div style="display:flex;gap:0.5rem">
+              <input v-model="sudoInputPwd" type="password" class="input-control"
+                placeholder="Enter sudo password…"
+                style="flex:1;padding:0.55rem 0.85rem;font-size:0.85rem"
+                @keydown.enter="submitSudoForInstall">
+              <button class="btn btn-primary" style="background:var(--red);border-color:var(--red);padding:0.55rem 1.2rem;font-weight:600" @click="submitSudoForInstall">
+                🔑 Submit &amp; Continue
+              </button>
+            </div>
+          </div>
+
+          <div class="install-modal-footer">
+            <div style="font-size:0.8rem;color:var(--muted)">
+              <span v-if="installStatus === 'running'">Please wait while packages are installed and configured...</span>
+              <span v-else-if="installStatus === 'sudo_required'" style="color:#fda4af;font-weight:600">Waiting for administrator password above...</span>
+              <span v-else-if="installStatus === 'success'" style="color:var(--green);font-weight:600">Component installed successfully! 🎉</span>
+              <span v-else-if="installStatus === 'failed'" style="color:var(--red);font-weight:600">Installation failed. Check log output above.</span>
+            </div>
+            <button class="btn btn-outline btn-sm" @click="forceCloseInstallModal">
+              Close
+            </button>
           </div>
         </div>
       </div>
@@ -1155,6 +1234,115 @@ const ServicesTab = {
     const sudoOpen = ref(false), sudoPwd = ref(''), cachedPwd = ref('');
     let sudoResolve = null;
 
+    const installModalOpen = ref(false);
+    const installStatus = ref('running');
+    const installLogs = ref([]);
+    const installComponent = ref('');
+    const installPhpVersion = ref('');
+    const selectedPhpVersion = ref('8.3');
+    const sudoInputPwd = ref('');
+    const terminalBoxRef = ref(null);
+    let pollInterval = null;
+
+    function getComponentTitle(id) {
+      const map = { caddy: 'Caddy Proxy', mariadb: 'MariaDB Server', php: 'PHP-FPM Manager', pma: 'phpMyAdmin Client' };
+      return map[id] || id;
+    }
+
+    function getLogClass(line) {
+      if (line.includes('❌') || line.includes('Failed') || line.includes('error') || line.includes('Err:')) return 'error';
+      if (line.includes('⚠') || line.includes('Warning')) return 'warning';
+      if (line.includes('✅') || line.includes('🎉') || line.includes('successfully')) return 'success';
+      if (line.includes('🚀') || line.includes('Starting') || line.includes('[')) return 'info';
+      return '';
+    }
+
+    function forceCloseInstallModal() {
+      installModalOpen.value = false;
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+      emit('reload');
+    }
+
+    function closeInstallModal() {
+      forceCloseInstallModal();
+    }
+
+    function scrollTerminalToBottom() {
+      nextTick(() => {
+        if (terminalBoxRef.value) {
+          terminalBoxRef.value.scrollTop = terminalBoxRef.value.scrollHeight;
+        }
+      });
+    }
+
+    async function submitSudoForInstall() {
+      if (!sudoInputPwd.value) return;
+      cachedPwd.value = sudoInputPwd.value;
+      const pwd = sudoInputPwd.value;
+      sudoInputPwd.value = '';
+      installStatus.value = 'running';
+      installLogs.value.push('🔑 Authenticating and applying permissions...');
+
+      let r = await api('/service/install', 'POST', { 
+        component: installComponent.value, 
+        version: installPhpVersion.value, 
+        sudo_password: pwd 
+      });
+      if (r.error === 'sudo_required') {
+        installStatus.value = 'sudo_required';
+        installLogs.value.push('❌ Password incorrect. Please try again.');
+        return;
+      }
+
+      if (!r.ok || !r.job_id) {
+        installStatus.value = 'failed';
+        installLogs.value.push(`❌ ${r.error || 'Failed to start installation.'}`);
+        return;
+      }
+
+      startPollingJob(r.job_id);
+    }
+
+    function startPollingJob(jobId) {
+      if (pollInterval) clearInterval(pollInterval);
+
+      pollInterval = setInterval(async () => {
+        const prog = await api(`/service/install/progress?job_id=${jobId}`);
+        if (prog.ok && prog.job) {
+          const job = prog.job;
+          const logs = job.logs || [];
+          installLogs.value = logs;
+          scrollTerminalToBottom();
+
+          const hasSudoErr = logs.some(l => 
+            l.includes('sudo: interactive authentication is required') || 
+            l.includes('System password required for sudo') ||
+            l.includes('a terminal is required') ||
+            l.includes('wildcards are not allowed')
+          );
+
+          if (job.status === 'sudo_required' || (job.status === 'failed' && hasSudoErr) || hasSudoErr) {
+            if (!cachedPwd.value || job.status === 'sudo_required' || (job.status === 'failed' && hasSudoErr)) {
+              clearInterval(pollInterval);
+              pollInterval = null;
+              installStatus.value = 'sudo_required';
+            }
+          } else if (job.status === 'success') {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            installStatus.value = 'success';
+            emit('toast', `Component installed successfully!`);
+            emit('reload');
+          } else if (job.status === 'failed') {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            installStatus.value = 'failed';
+            emit('toast', `Failed to install component`, true);
+          }
+        }
+      }, 600);
+    }
+
     const filteredExt = computed(() =>
       extensions.value.filter(e => e.name.includes(extSearch.value.toLowerCase()))
     );
@@ -1171,11 +1359,33 @@ const ServicesTab = {
       emit('reload');
     }
 
-    async function install(id) {
-      emit('toast', `Installing ${id}…`);
-      const r = await api('/service/install', 'POST', { component: id });
-      emit('toast', r.ok ? r.message : r.error, !r.ok);
-      emit('reload');
+    async function install(id, version = '') {
+      installComponent.value = id;
+      installPhpVersion.value = version || '';
+      const title = version ? `PHP ${version}` : getComponentTitle(id);
+      installLogs.value = [`🚀 Starting installation for ${title}...`];
+      installStatus.value = 'running';
+      installModalOpen.value = true;
+
+      let r = await api('/service/install', 'POST', { 
+        component: id, 
+        version: version || '', 
+        sudo_password: cachedPwd.value 
+      });
+
+      if (r.error === 'sudo_required') {
+        installStatus.value = 'sudo_required';
+        installLogs.value.push('🔑 Administrator privileges required. Please enter password below.');
+        return;
+      }
+
+      if (!r.ok || !r.job_id) {
+        installStatus.value = 'failed';
+        installLogs.value.push(`❌ ${r.error || 'Failed to start installation.'}`);
+        return;
+      }
+
+      startPollingJob(r.job_id);
     }
 
     async function loadExt() {
@@ -1219,7 +1429,11 @@ const ServicesTab = {
     }
 
     onMounted(loadExt);
-    return { services, extensions, extSearch, filteredExt, svcInfo, control, install, toggleExt, installExt, sudoOpen, sudoPwd, confirmSudo };
+    return {
+      services, extensions, extSearch, filteredExt, svcInfo, control, install, toggleExt, installExt,
+      sudoOpen, sudoPwd, confirmSudo, installModalOpen, installStatus, installLogs, installComponent, installPhpVersion, selectedPhpVersion,
+      sudoInputPwd, submitSudoForInstall, getComponentTitle, getLogClass, closeInstallModal, forceCloseInstallModal, terminalBoxRef
+    };
   }
 };
 
@@ -1277,6 +1491,9 @@ const SettingsTab = {
                   class="btn btn-primary btn-sm" style="flex:1;min-width:140px;text-decoration:none">
                   ⬇️ Download rootCA.pem
                 </a>
+                <button class="btn btn-primary btn-sm" style="flex:1;min-width:140px;background:linear-gradient(135deg,#06b6d4,#3b82f6);border:none" @click="trustChromeCert">
+                  🌐 Trust SSL in Chrome &amp; System
+                </button>
                 <button class="btn btn-outline btn-sm" style="flex:1;min-width:120px" @click="exportCA">🔄 Re-export</button>
               </div>
             </div>
@@ -1419,6 +1636,16 @@ const SettingsTab = {
       emit('reload');
     }
 
+    async function trustChromeCert() {
+      emit('toast', 'Registering SSL Certificate in System & Chrome NSS DB...');
+      const r = await api('/ssl/trust', 'POST');
+      if (r.ok) {
+        emit('toast', 'SSL Certificate trusted successfully! Please restart Google Chrome (chrome://restart) to clear SSL cache.');
+      } else {
+        emit('toast', r.error || 'Failed to trust SSL certificate', true);
+      }
+    }
+
     async function loadLogs(type) {
       logType.value = type;
       logContent.value = `Loading ${type} logs…`;
@@ -1448,7 +1675,7 @@ const SettingsTab = {
 
     onMounted(() => { loadPending(); loadLogs('api'); });
 
-    return { newUser, newPass, pendingList, logContent, logType, logLines, logLabels, consoleEl, linuxInstructions, saveCreds, approve, reject, revoke, exportCA, loadLogs, clearLogs, isSystemIp };
+    return { newUser, newPass, pendingList, logContent, logType, logLines, logLabels, consoleEl, linuxInstructions, saveCreds, approve, reject, revoke, exportCA, trustChromeCert, loadLogs, clearLogs, isSystemIp };
   }
 };
 // ── Tab: Domain Manager ─────────────────────────────────────────
