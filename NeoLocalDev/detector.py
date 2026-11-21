@@ -171,9 +171,9 @@ def detect_running_projects():
 
     # Sticky secure port assignment: running apps keep their assigned port;
     # newly started apps always receive the next available free port from 81.
-    if not hasattr(discover_projects, "_sticky_ports"):
-        discover_projects._sticky_ports = {}
-    sticky = discover_projects._sticky_ports
+    if not hasattr(detect_running_projects, "_sticky_ports"):
+        detect_running_projects._sticky_ports = {}
+    sticky = detect_running_projects._sticky_ports
 
     def _proj_key(p):
         return (p["path"], p["port"]) if p.get("path") and p["path"] != "Unknown" else (p["name"], p["port"])
