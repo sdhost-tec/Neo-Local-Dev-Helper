@@ -99,7 +99,7 @@ def detect_framework_and_runtime(cwd, cmdline, exe):
     return framework, runtime
 
 IGNORE_PROCESSES = {
-    "language_server", "antigravity-ide", "gnome-remote-desktop", "gnome-remote-de",
+    "language_server", "antigravity-ide", "antigravity", "agy", "gnome-remote-desktop", "gnome-remote-de",
     "vscode", "chrome", "firefox", "copilot", "node-lsp", "tabnine", "python-lsp",
     "unattended-upgrades"
 }
@@ -169,11 +169,36 @@ def detect_running_projects():
     # Sort by port to ensure stable sequential mapping
     projects.sort(key=lambda x: x["port"])
 
-    # Assign secure ports starting from 81
-    start_secure_port = 81
-    for i, proj in enumerate(projects):
-        proj["secure_port"] = start_secure_port + i
+    # Sticky secure port assignment: running apps keep their assigned port;
+    # newly started apps always receive the next available free port from 81.
+    if not hasattr(discover_projects, "_sticky_ports"):
+        discover_projects._sticky_ports = {}
+    sticky = discover_projects._sticky_ports
 
+    def _proj_key(p):
+        return (p["path"], p["port"]) if p.get("path") and p["path"] != "Unknown" else (p["name"], p["port"])
+
+    active_keys = {_proj_key(p) for p in projects}
+    # Release ports of stopped apps
+    for stale_key in list(sticky.keys()):
+        if stale_key not in active_keys:
+            del sticky[stale_key]
+
+    used_ports = set(sticky.values())
+    start_secure_port = 81
+    for proj in projects:
+        key = _proj_key(proj)
+        if key in sticky:
+            proj["secure_port"] = sticky[key]
+        else:
+            candidate = start_secure_port
+            while candidate in used_ports:
+                candidate += 1
+            sticky[key] = candidate
+            used_ports.add(candidate)
+            proj["secure_port"] = candidate
+
+    projects.sort(key=lambda x: x["secure_port"])
     return projects
 
 def check_port_conflict(port):
