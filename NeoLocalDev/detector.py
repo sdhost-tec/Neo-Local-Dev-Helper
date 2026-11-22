@@ -101,7 +101,8 @@ def detect_framework_and_runtime(cwd, cmdline, exe):
 IGNORE_PROCESSES = {
     "language_server", "antigravity-ide", "antigravity", "agy", "gnome-remote-desktop", "gnome-remote-de",
     "vscode", "chrome", "firefox", "copilot", "node-lsp", "tabnine", "python-lsp",
-    "unattended-upgrades"
+    "unattended-upgrades", "xdm-app", "xdman", "transmission", "qbittorrent",
+    "steam", "spotify", "discord", "telegram", "slack", "dropbox", "cupsd", "avahi"
 }
 
 def detect_running_projects():
@@ -144,6 +145,10 @@ def detect_running_projects():
             continue
 
         framework, runtime = detect_framework_and_runtime(cwd, cmdline, exe)
+        # Skip non-dev desktop apps running from home directory or root with unknown runtime
+        home_dir = str(Path.home())
+        if runtime == "Unknown" and framework == "Generic" and (not cwd or cwd in ("/", home_dir)):
+            continue
         project_name = Path(cwd).name if cwd else f"app-{port}"
 
 
